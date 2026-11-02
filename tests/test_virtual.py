@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from mcp_output_guard import virtual
 from mcp_output_guard.spill import SpillStore
 
@@ -143,6 +145,18 @@ def test_unknown_virtual_tool(store: SpillStore) -> None:
     result = virtual.call_virtual_tool("output_guard_nope", {}, store)
     assert result["isError"] is True
     assert "unknown virtual tool" in result["content"][0]["text"]
+
+
+def test_read_survives_io_error(store: SpillStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    record = store.put_text("abc")
+
+    def boom(*args, **kwargs):
+        raise OSError("permission denied")
+
+    monkeypatch.setattr(store, "read", boom)
+    result = virtual.call_virtual_tool(virtual.READ_TOOL, {"spill": record.spill_id}, store)
+    assert result["isError"] is True
+    assert "permission denied" in result["content"][0]["text"]
 
 
 def test_arguments_not_a_mapping(store: SpillStore) -> None:

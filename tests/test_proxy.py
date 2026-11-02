@@ -63,6 +63,20 @@ def test_oversized_response_is_rewritten(tmp_path: Path) -> None:
     assert proxy.stats.results_truncated == 1
 
 
+def test_guard_failure_fails_open(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    proxy, _ = make_proxy(tmp_path)
+    proxy.handle_client_message(call_message(6, "db_query"))
+    raw = response_message(6, {"content": [{"type": "text", "text": "z" * 500}]})
+
+    def boom(*args: Any, **kwargs: Any) -> Any:
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr("mcp_output_guard.proxy.limit_result", boom)
+    assert proxy.handle_server_message(raw) is raw
+    assert proxy.stats.failures == 1
+    assert b"forwarding it unguarded" in proxy._log.getvalue()
+
+
 def test_error_result_is_not_rewritten(tmp_path: Path) -> None:
     proxy, _ = make_proxy(tmp_path)
     proxy.handle_client_message(call_message(3))

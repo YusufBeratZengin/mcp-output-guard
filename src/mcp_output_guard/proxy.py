@@ -24,7 +24,7 @@ from typing import IO, Any, BinaryIO
 from . import framing, virtual
 from .framing import FramingError
 from .limits import DEFAULT_IMAGE_MAX_CHARS, ToolLimits, limit_result
-from .spill import SpillStore
+from .spill import SpillError, SpillStore
 
 __all__ = ["GuardStats", "PendingCall", "Proxy", "resolve_command"]
 
@@ -46,13 +46,17 @@ class GuardStats:
     results_truncated: int = 0
     chars_hidden: int = 0
     binaries_spilled: int = 0
+    failures: int = 0
 
     def summary(self) -> str:
-        return (
+        text = (
             f"mcp-output-guard: {self.calls_seen} tool call(s), "
             f"{self.results_truncated} truncated, {self.chars_hidden} char(s) kept out "
             f"of the context, {self.binaries_spilled} binary block(s) spilled"
         )
+        if self.failures:
+            text += f", {self.failures} guard failure(s) (responses forwarded unguarded)"
+        return text
 
 
 def _id_key(value: Any) -> str:
@@ -250,15 +254,25 @@ class Proxy:
             return None
 
         limit = self.tool_limits.for_tool(pending.tool)
-        guarded, info = limit_result(
-            result,
-            limit,
-            spill=self.store,
-            tool=pending.tool,
-            note_lang=self.note_lang,
-            image_max_chars=self.image_max_chars,
-            reserve_note=self.reserve_note,
-        )
+        try:
+            guarded, info = limit_result(
+                result,
+                limit,
+                spill=self.store,
+                tool=pending.tool,
+                note_lang=self.note_lang,
+                image_max_chars=self.image_max_chars,
+                reserve_note=self.reserve_note,
+            )
+        except (OSError, SpillError, ValueError) as exc:
+            # Fail open: a full disk or an unwritable spill directory must not
+            # cost the caller its session. The oversized result goes through.
+            self.stats.failures += 1
+            self._log_line(
+                f"mcp-output-guard: could not guard a result from {pending.tool!r} ({exc}); "
+                "forwarding it unguarded"
+            )
+            return None
         if info is None:
             return None
 
@@ -361,6 +375,11 @@ class Proxy:
                 self._write_client(self.handle_server_message(raw))
             except (BrokenPipeError, OSError):
                 break
+            except Exception as exc:  # pragma: no cover - last-resort liveness guard
+                self.stats.failures += 1
+                self._log_line(f"mcp-output-guard: dropped guard for one message ({exc})")
+                with contextlib.suppress(BrokenPipeError, OSError):
+                    self._write_client(raw)
         with self._client_lock, contextlib.suppress(OSError, ValueError):  # pragma: no cover
             self._client_out.flush()
 

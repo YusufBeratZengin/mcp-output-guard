@@ -137,6 +137,7 @@ On Windows the proxy resolves `npx.cmd` shims automatically, so the same line wo
 | `structuredContent` over the limit | First K records kept, schema untouched, counts reported in `_meta` |
 | Base64 image/audio over `--image-max-chars` | Decoded, written to a real file, replaced by a pointer + size |
 | Broken base64 | Left exactly as it came, flagged in `_meta.output_guard.binary` |
+| Spill directory unwritable or full | **Fails open**: the result is forwarded unguarded, a warning goes to stderr and the call is counted in `--stats` |
 
 The byte-for-byte guarantee matters: a client that hashes or diffs tool output sees no change
 unless the guard actually did something.
@@ -230,7 +231,7 @@ bash scripts/check.sh        # ruff + mypy + pytest with --cov-fail-under=85
 `bash examples/demo.sh` replays the walkthrough above against the bundled fake server and prints
 the spill path, a paged read and a grep.
 
-Current state: 179 tests, 95% line+branch coverage, Linux and Windows CI.
+Current state: 181 tests, 94% line+branch coverage, Linux and Windows CI.
 
 ## License
 

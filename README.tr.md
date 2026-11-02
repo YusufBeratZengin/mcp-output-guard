@@ -134,6 +134,7 @@ Windows'ta `npx.cmd` gibi sarmalayıcılar otomatik çözülür; aynı satır or
 | `structuredContent` sınırın üstünde | İlk K kayıt kalır, şema bozulmaz, sayılar `_meta`'da |
 | Base64 görsel/ses büyük | Çözülür, gerçek dosyaya yazılır, yerine yol + boyut konur |
 | Bozuk base64 | Olduğu gibi bırakılır, `_meta.output_guard.binary` içinde işaretlenir |
+| Spill klasörü yazılamıyor / disk dolu | **Açık hata (fail open)**: sonuç korumasız iletilir, stderr'e uyarı yazılır ve çağrı `--stats`'ta sayılır |
 
 Bayt bayt garantisi önemli: istemci çıktıyı özetliyor veya karşılaştırıyorsa, guard gerçekten
 bir şey yapmadıkça hiçbir fark görmez.
@@ -226,7 +227,7 @@ bash scripts/check.sh        # ruff + mypy + pytest, --cov-fail-under=85
 `bash examples/demo.sh` yukarıdaki akışı paketteki sahte sunucuyla yeniden oynatır; spill
 yolunu, sayfalı okumayı ve grep sonucunu basar.
 
-Güncel durum: 179 test, %95 satır+dallanma kapsamı, Linux ve Windows CI.
+Güncel durum: 181 test, %94 satır+dallanma kapsamı, Linux ve Windows CI.
 
 ## Lisans
 

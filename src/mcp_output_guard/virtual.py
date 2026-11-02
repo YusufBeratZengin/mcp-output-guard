@@ -258,5 +258,5 @@ def call_virtual_tool(
             )
 
         return _error_result(f"unknown virtual tool: {name}")
-    except (SpillError, SpillSQLError, ValueError) as exc:
+    except (OSError, SpillError, SpillSQLError, ValueError) as exc:
         return _error_result(str(exc))
