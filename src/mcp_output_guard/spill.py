@@ -40,7 +40,7 @@ DEFAULT_FILE_MODE = 0o600
 DEFAULT_DIR_MODE = 0o700
 DEFAULT_TTL_SECONDS = 7 * 24 * 3600
 
-_ID_RE = re.compile(r"^[0-9a-f]{64}$")
+_ID_RE = re.compile(r"^[0-9a-f]{8,64}$")
 _KIND_SUFFIX = {"text": ".txt", "json": ".json", "csv": ".csv", "binary": ".bin"}
 
 
@@ -175,9 +175,15 @@ class SpillStore:
         candidate: Path
 
         if _ID_RE.match(ref):
-            matches = sorted(p for p in self.directory.glob(f"{ref}.*") if not p.name.endswith(".meta.json"))
+            matches = sorted(
+                p for p in self.directory.glob(f"{ref}*") if not p.name.endswith(".meta.json")
+            )
             if not matches:
                 raise SpillError(f"unknown spill id: {ref}")
+            if len(matches) > 1:
+                raise SpillError(
+                    f"ambiguous spill id {ref}: {len(matches)} files match, use more characters"
+                )
             candidate = matches[0]
         else:
             given = Path(ref)

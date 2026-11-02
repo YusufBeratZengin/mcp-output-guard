@@ -40,9 +40,10 @@ written with FastMCP — it cannot guard a third-party server you do not control
 ## Install
 
 ```bash
-pipx install mcp-output-guard      # or: pip install mcp-output-guard
+pipx install mcp-output-guard      # once published; today: pip install .
 ```
 
+From a checkout: `pip install .` (or `python -m pip install -e ".[dev]"` for development).
 Requires Python 3.10+. No runtime dependencies.
 
 ## 30-second example
@@ -77,6 +78,7 @@ Real output (pretty-printed for readability, the tool returned 37 149 characters
         "max_chars": 400,
         "total_chars": 37149,
         "shown_chars": 400,
+        "structured_content": "absent",
         "spill": "/home/you/.mcp-guard/spills/85650bc82f3ddeeddca95634c6cda8a95fea5ab278bab1631b3f7f62a02c7489.txt",
         "hint": "The full output is on disk. Use output_guard_read(spill, offset, limit) ..."
       }
@@ -84,6 +86,8 @@ Real output (pretty-printed for readability, the tool returned 37 149 characters
   }
 }
 ```
+
+Run the whole thing yourself with `bash examples/demo.sh` (three calls: truncate, page, grep).
 
 The file holds every one of the 37 149 characters. The model can page through it without
 leaving the conversation, because the proxy also injects four tools into `tools/list`:
@@ -222,6 +226,9 @@ clean it up. Nothing is ever sent over the network by this tool.
 python -m pip install -e ".[dev]"
 bash scripts/check.sh        # ruff + mypy + pytest with --cov-fail-under=85
 ```
+
+`bash examples/demo.sh` replays the walkthrough above against the bundled fake server and prints
+the spill path, a paged read and a grep.
 
 Current state: 176 tests, 95% line+branch coverage, Linux and Windows CI.
 

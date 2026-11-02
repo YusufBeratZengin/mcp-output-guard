@@ -163,6 +163,32 @@ def test_result_without_content_is_untouched(store: SpillStore) -> None:
     assert out is result and info is None
 
 
+def test_structured_content_status_when_text_is_truncated(store: SpillStore) -> None:
+    # text truncated, small structured payload kept as-is: the model must be
+    # told the structured part is complete
+    result = {
+        "content": [{"type": "text", "text": "w" * 400}],
+        "structuredContent": {"ok": True},
+    }
+    out, _ = limit_result(result, 50, spill=store)
+    assert out["_meta"]["output_guard"]["structured_content"] == "intact"
+
+
+def test_structured_content_status_absent(store: SpillStore) -> None:
+    out, _ = limit_result({"content": [{"type": "text", "text": "w" * 400}]}, 50, spill=store)
+    assert out["_meta"]["output_guard"]["structured_content"] == "absent"
+
+
+def test_structured_content_status_when_it_cannot_be_pruned(store: SpillStore) -> None:
+    result = {
+        "content": [{"type": "text", "text": "w" * 400}],
+        "structuredContent": {"blob": "x" * 500},
+    }
+    out, _ = limit_result(result, 100, spill=store)
+    assert out["_meta"]["output_guard"]["structured_content"] == "oversized_but_unchanged"
+    assert out["structuredContent"] == {"blob": "x" * 500}
+
+
 def test_text_under_limit_but_structured_over(store: SpillStore) -> None:
     items = [{"id": i, "name": f"item-{i:04d}"} for i in range(1000)]
     result = {"content": [{"type": "text", "text": "ok"}], "structuredContent": {"items": items}}
@@ -174,6 +200,7 @@ def test_text_under_limit_but_structured_over(store: SpillStore) -> None:
     report = out["_meta"]["output_guard"]["structured"]["fields"][0]
     assert report["total_items"] == 1000
     assert report["shown_items"] == len(pruned)
+    assert out["_meta"]["output_guard"]["structured_content"] == "pruned"
     # the full structured payload survives in the lossless JSON spill
     frozen = json.loads(Path(info["json_path"]).read_text(encoding="utf-8"))
     assert len(frozen["structuredContent"]["items"]) == 1000

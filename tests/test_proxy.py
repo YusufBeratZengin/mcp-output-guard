@@ -139,12 +139,24 @@ def test_tools_list_injection_is_idempotent(tmp_path: Path) -> None:
         assert names.count("output_guard_read") == 1
 
 
-def test_tools_list_pagination_is_left_alone(tmp_path: Path) -> None:
+def test_tools_list_first_page_gets_tools_even_when_paginated(tmp_path: Path) -> None:
     proxy, _ = make_proxy(tmp_path)
     proxy.handle_client_message(
         framing.encode_message({"jsonrpc": "2.0", "id": 13, "method": "tools/list"})
     )
     raw = response_message(13, {"tools": [{"name": "a"}], "nextCursor": "page2"})
+    names = [tool["name"] for tool in json.loads(proxy.handle_server_message(raw))["result"]["tools"]]
+    assert "output_guard_read" in names
+
+
+def test_tools_list_second_page_is_left_alone(tmp_path: Path) -> None:
+    proxy, _ = make_proxy(tmp_path)
+    proxy.handle_client_message(
+        framing.encode_message(
+            {"jsonrpc": "2.0", "id": 15, "method": "tools/list", "params": {"cursor": "page2"}}
+        )
+    )
+    raw = response_message(15, {"tools": [{"name": "b"}]})
     assert proxy.handle_server_message(raw) is raw
 
 

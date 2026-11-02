@@ -21,7 +21,7 @@ fail() {
 section "python: $($PYTHON --version 2>&1)"
 
 section "lint (ruff)"
-if $PYTHON -m ruff check src tests; then :; else fail "ruff"; fi
+if $PYTHON -m ruff check src tests examples; then :; else fail "ruff"; fi
 
 section "types (mypy)"
 if $PYTHON -m mypy; then :; else fail "mypy"; fi

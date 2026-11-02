@@ -41,9 +41,10 @@ sunucularda çalışır — satın aldığınız/indirdiğiniz bir sunucuyu koru
 ## Kurulum
 
 ```bash
-pipx install mcp-output-guard      # veya: pip install mcp-output-guard
+pipx install mcp-output-guard      # yayınlandıktan sonra; bugün: pip install .
 ```
 
+Depodan kurmak için: `pip install .` (geliştirme için `python -m pip install -e ".[dev]"`).
 Python 3.10+ gerekir. Çalışma zamanı bağımlılığı yoktur.
 
 ## 30 saniyelik örnek
@@ -72,12 +73,15 @@ Gerçek çıktı (okunabilirlik için biçimlendirildi; araç 37 149 karakter d�
         "max_chars": 400,
         "total_chars": 37149,
         "shown_chars": 400,
+        "structured_content": "absent",
         "spill": "/home/you/.mcp-guard/spills/85650bc8....txt"
       }
     }
   }
 }
 ```
+
+Aynı akışı kendiniz çalıştırabilirsiniz: `bash examples/demo.sh` (üç çağrı: kes, sayfala, ara).
 
 Dosyada 37 149 karakterin tamamı var. Model sohbetten çıkmadan dosyada gezinebilir, çünkü proxy
 `tools/list` yanıtına dört araç ekliyor:
@@ -217,6 +221,9 @@ araç hiçbir şeyi ağa göndermez.
 python -m pip install -e ".[dev]"
 bash scripts/check.sh        # ruff + mypy + pytest, --cov-fail-under=85
 ```
+
+`bash examples/demo.sh` yukarıdaki akışı paketteki sahte sunucuyla yeniden oynatır; spill
+yolunu, sayfalı okumayı ve grep sonucunu basar.
 
 Güncel durum: 176 test, %95 satır+dallanma kapsamı, Linux ve Windows CI.
 
