@@ -205,6 +205,17 @@ def prune_structured(
     return value, None
 
 
+def _structured_status(
+    structured: Any, pruned_info: dict[str, Any] | None, oversized: bool
+) -> str:
+    if structured is None:
+        return "absent"
+    if pruned_info is not None:
+        return "pruned"
+    # Oversized but shaped in a way the pruner cannot trim without inventing keys.
+    return "oversized_but_unchanged" if oversized else "intact"
+
+
 def limit_result(
     result: Any,
     max_chars: int,
@@ -380,6 +391,7 @@ def limit_result(
         "total_chars": text_total,
         "shown_chars": shown,
         "spill": primary_path,
+        "structured_content": _structured_status(structured, structured_info, structured_oversized),
         "hint": (
             "The full output is on disk. Use output_guard_read(spill, offset, limit) "
             "to page through it, output_guard_grep(spill, pattern) to search it, or "

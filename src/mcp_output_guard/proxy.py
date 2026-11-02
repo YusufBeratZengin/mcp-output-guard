@@ -237,7 +237,8 @@ class Proxy:
             return None
 
         if pending.method == "tools/list":
-            if self.virtual_tools and self._inject_tools(message["result"]):
+            first_page = not pending.params.get("cursor")
+            if self.virtual_tools and self._inject_tools(message["result"], first_page=first_page):
                 return message
             return None
 
@@ -268,12 +269,13 @@ class Proxy:
         return message
 
     @staticmethod
-    def _inject_tools(result: dict[str, Any]) -> bool:
+    def _inject_tools(result: dict[str, Any], *, first_page: bool = True) -> bool:
         tools = result.get("tools")
         if not isinstance(tools, list):
             return False
-        # With pagination the client walks pages; injecting on page 1 only.
-        if result.get("nextCursor"):
+        # Paginated lists are concatenated by the client, so the synthetic tools
+        # go on the first page only (the request that carries no cursor).
+        if not first_page:
             return False
         present = {t.get("name") for t in tools if isinstance(t, dict)}
         added = [d for d in virtual.tool_definitions() if d["name"] not in present]
@@ -325,8 +327,6 @@ class Proxy:
             with contextlib.suppress(OSError, ValueError):
                 if process.stdout is not None:
                     process.stdout.close()
-        if self.stats.calls_seen:
-            self._log_line(self.stats.summary())
         return int(code)
 
     def _client_loop(self) -> None:

@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import sys
 from collections.abc import Sequence
@@ -23,6 +24,16 @@ from .spill_sql import SpillSQLError
 __all__ = ["build_parser", "main"]
 
 PROG = "mcp-output-guard"
+
+
+def _force_utf8_stdio() -> None:
+    """Make ``read``/``spills`` output survive non-ASCII tool payloads on Windows."""
+    for stream in (sys.stdout, sys.stderr):
+        encoding = (getattr(stream, "encoding", "") or "").lower().replace("-", "")
+        reconfigure = getattr(stream, "reconfigure", None)
+        if encoding != "utf8" and reconfigure is not None:
+            with contextlib.suppress(OSError, ValueError):  # pragma: no cover - captured streams
+                reconfigure(encoding="utf-8")
 
 
 def _store_from_args(args: argparse.Namespace) -> SpillStore:
@@ -194,8 +205,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "run":
         return _run(args)
     if args.command == "spills":
+        _force_utf8_stdio()
         return _spills(args)
     if args.command == "read":
+        _force_utf8_stdio()
         return _read(args)
     parser.print_help()
     return 0
