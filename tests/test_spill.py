@@ -113,6 +113,19 @@ def test_resolve_accepts_absolute_path_inside_store(store: SpillStore) -> None:
     assert store.resolve(str(record.path)) == record.path
 
 
+def test_resolve_accepts_unique_id_prefix(store: SpillStore) -> None:
+    record = store.put_text("prefix me")
+    assert store.resolve(record.spill_id[:12]) == record.path
+
+
+def test_resolve_rejects_ambiguous_prefix(store: SpillStore, tmp_path: Path) -> None:
+    store.ensure()
+    (store.directory / "abcdef12aa.txt").write_text("one", encoding="utf-8")
+    (store.directory / "abcdef12bb.txt").write_text("two", encoding="utf-8")
+    with pytest.raises(SpillError, match="ambiguous"):
+        store.resolve("abcdef12")
+
+
 def test_resolve_unknown_id(store: SpillStore) -> None:
     store.ensure()
     with pytest.raises(SpillError, match="unknown spill id"):
@@ -218,3 +231,35 @@ def test_record_as_dict(store: SpillStore) -> None:
     payload = record.as_dict()
     assert payload["tool"] == "t"
     assert payload["kind"] == "text"
+
+
+def test_spill_dir_with_spaces_and_unicode(tmp_path: Path) -> None:
+    """A ``C:\\Program Files``-style spill directory must work everywhere.
+
+    Windows user directories routinely carry spaces and non-ASCII characters,
+    so the store must not assume a POSIX-clean path.
+    """
+    directory = tmp_path / "Program Files" / "çıktı klasörü" / "spills"
+    store = SpillStore(directory)
+    record = store.put_text("merhaba dünya")
+    assert record.path.parent == directory
+    assert store.resolve(record.spill_id) == record.path
+    assert store.read(str(record.path))["text"] == "merhaba dünya"
+
+
+def test_resolve_rejects_other_drive(
+    store: SpillStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On Windows ``os.path.commonpath`` raises for paths on different drives.
+
+    That ValueError must become a containment refusal, not a crash, so an
+    absolute ``D:\\leak.txt`` reference is denied exactly like ``../leak.txt``.
+    """
+    record = store.put_text("inside")
+
+    def boom(paths: object) -> str:
+        raise ValueError("path is on mount 'D:', start on mount 'C:'")
+
+    monkeypatch.setattr("mcp_output_guard.spill.os.path.commonpath", boom)
+    with pytest.raises(SpillError, match="outside the spill directory"):
+        store.resolve(str(record.path))
