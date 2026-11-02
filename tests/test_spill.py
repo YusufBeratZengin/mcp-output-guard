@@ -1,0 +1,220 @@
+"""Spill store tests: permissions, dedupe, containment and paging."""
+
+from __future__ import annotations
+
+import os
+import stat
+import time
+from pathlib import Path
+
+import pytest
+
+from mcp_output_guard.spill import (
+    DEFAULT_TTL_SECONDS,
+    SpillError,
+    SpillStore,
+    default_dir,
+    default_store,
+)
+
+
+def test_put_text_writes_file_with_restrictive_mode(store: SpillStore, tmp_path: Path) -> None:
+    record = store.put_text("hello world", tool="demo")
+    assert record.path.read_text(encoding="utf-8") == "hello world"
+    assert record.chars == 11
+    if os.name != "nt":
+        assert stat.S_IMODE(record.path.stat().st_mode) == 0o600
+        assert stat.S_IMODE(store.directory.stat().st_mode) == 0o700
+
+
+def test_identical_payloads_deduplicate(store: SpillStore) -> None:
+    first = store.put_text("same")
+    second = store.put_text("same")
+    assert first.spill_id == second.spill_id
+    assert first.path == second.path
+
+
+def test_put_json_roundtrip(store: SpillStore) -> None:
+    record = store.put_json({"items": [1, 2, 3], "ü": "ş"})
+    assert record.kind == "json"
+    assert record.path.suffix == ".json"
+    assert "\u015f" in record.path.read_text(encoding="utf-8")
+
+
+def test_put_bytes_uses_suffix_and_sanitizes_it(store: SpillStore) -> None:
+    assert store.put_bytes(b"\x00\x01", suffix=".png").path.suffix == ".png"
+    assert store.put_bytes(b"\x02", suffix="../../etc/passwd").path.suffix == ".bin"
+
+
+def test_read_window_and_eof(store: SpillStore) -> None:
+    text = "0123456789"
+    record = store.put_text(text)
+    first = store.read(record.spill_id, offset=0, limit=4)
+    assert first["text"] == "0123"
+    assert first["total_chars"] == 10
+    assert first["eof"] is False
+    last = store.read(str(record.path), offset=8, limit=100)
+    assert last["text"] == "89"
+    assert last["eof"] is True
+    assert last["returned_chars"] == 2
+
+
+def test_read_clamps_offset(store: SpillStore) -> None:
+    record = store.put_text("abc")
+    assert store.read(record.spill_id, offset=-5, limit=2)["offset"] == 0
+    beyond = store.read(record.spill_id, offset=99, limit=2)
+    assert beyond["text"] == ""
+    assert beyond["eof"] is True
+
+
+def test_read_rejects_bad_limit(store: SpillStore) -> None:
+    record = store.put_text("abc")
+    with pytest.raises(SpillError):
+        store.read(record.spill_id, limit=0)
+
+
+def test_grep_finds_lines_and_ignores_case(store: SpillStore) -> None:
+    record = store.put_text("alpha\nBeta\ngamma beta\n")
+    payload = store.grep(record.spill_id, "beta")
+    assert payload["total_matches"] == 1
+    payload = store.grep(record.spill_id, "beta", ignore_case=True)
+    assert payload["total_matches"] == 2
+    assert payload["matches"][0]["line"] == 2
+
+
+def test_grep_respects_max_matches(store: SpillStore) -> None:
+    record = store.put_text("\n".join("hit" for _ in range(10)))
+    payload = store.grep(record.spill_id, "hit", max_matches=3)
+    assert payload["returned_matches"] == 3
+    assert payload["total_matches"] == 10
+
+
+def test_grep_invalid_regex(store: SpillStore) -> None:
+    record = store.put_text("abc")
+    with pytest.raises(SpillError, match="regular expression"):
+        store.grep(record.spill_id, "([")
+    with pytest.raises(SpillError):
+        store.grep(record.spill_id, "a", max_matches=0)
+
+
+def test_resolve_rejects_traversal(store: SpillStore, tmp_path: Path) -> None:
+    store.ensure()
+    (tmp_path / "outside.txt").write_text("secret", encoding="utf-8")
+    with pytest.raises(SpillError):
+        store.resolve("../outside.txt")
+    with pytest.raises(SpillError):
+        store.resolve(str(tmp_path / "outside.txt"))
+    with pytest.raises(SpillError):
+        store.resolve("")
+
+
+def test_resolve_accepts_absolute_path_inside_store(store: SpillStore) -> None:
+    record = store.put_text("inside")
+    assert store.resolve(str(record.path)) == record.path
+
+
+def test_resolve_unknown_id(store: SpillStore) -> None:
+    store.ensure()
+    with pytest.raises(SpillError, match="unknown spill id"):
+        store.resolve("0" * 64)
+
+
+def test_resolve_directory_is_rejected(store: SpillStore) -> None:
+    store.ensure()
+    with pytest.raises(SpillError):
+        store.resolve(str(store.directory))
+
+
+def test_resolve_follows_symlink_out_of_store(store: SpillStore, tmp_path: Path) -> None:
+    store.ensure()
+    outside = tmp_path / "secret.txt"
+    outside.write_text("secret", encoding="utf-8")
+    link = store.directory / "link.txt"
+    try:
+        link.symlink_to(outside)
+    except (OSError, NotImplementedError):  # pragma: no cover - no symlink rights
+        pytest.skip("symlinks unavailable")
+    with pytest.raises(SpillError):
+        store.resolve("link.txt")
+
+
+def test_list_and_stats(store: SpillStore) -> None:
+    assert store.list() == []
+    record = store.put_text("listed", tool="t1")
+    listed = store.list()
+    assert len(listed) == 1
+    assert listed[0]["spill_id"] == record.spill_id
+    assert listed[0]["path"].endswith(".txt")
+    stats = store.stats()
+    assert stats["files"] == 1
+    assert stats["bytes"] > 0
+
+
+def test_list_ignores_corrupt_sidecar(store: SpillStore) -> None:
+    store.ensure()
+    (store.directory / "deadbeef.meta.json").write_text("{not json", encoding="utf-8")
+    assert store.list() == []
+
+
+def test_cleanup_removes_only_old_files(store: SpillStore) -> None:
+    old = store.put_text("old")
+    fresh = store.put_text("fresh")
+    long_ago = time.time() - 10_000
+    os.utime(old.path, (long_ago, long_ago))
+    os.utime(store.directory / f"{old.spill_id}.meta.json", (long_ago, long_ago))
+    removed = store.cleanup(ttl_seconds=3600)
+    assert removed >= 1
+    assert fresh.path.exists()
+
+
+def test_cleanup_on_missing_directory(tmp_path: Path) -> None:
+    assert SpillStore(tmp_path / "nope").cleanup() == 0
+
+
+def test_cleanup_negative_ttl_is_noop(store: SpillStore) -> None:
+    store.put_text("keep")
+    assert store.cleanup(ttl_seconds=-1) == 0
+
+
+def test_ensure_reports_unwritable_directory(tmp_path: Path) -> None:
+    blocker = tmp_path / "file"
+    blocker.write_text("x", encoding="utf-8")
+    store = SpillStore(blocker / "sub")
+    with pytest.raises(SpillError, match="spill directory"):
+        store.ensure()
+
+
+def test_default_dir_env_override(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("MCP_OUTPUT_GUARD_SPILL_DIR", str(tmp_path / "custom"))
+    assert default_dir() == tmp_path / "custom"
+    monkeypatch.delenv("MCP_OUTPUT_GUARD_SPILL_DIR")
+    assert default_dir().name == "spills"
+    assert ".mcp-guard" in str(default_dir())
+
+
+def test_default_store_is_a_singleton(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from mcp_output_guard import spill as spill_module
+
+    monkeypatch.setattr(spill_module, "_DEFAULT", None)
+    monkeypatch.setenv("MCP_OUTPUT_GUARD_SPILL_DIR", str(tmp_path / "singleton"))
+    first = default_store()
+    assert default_store() is first
+    assert first.directory == tmp_path / "singleton"
+
+
+def test_ttl_default_is_a_week() -> None:
+    assert DEFAULT_TTL_SECONDS == 7 * 24 * 3600
+
+
+def test_spill_id_is_sha256_of_content(store: SpillStore) -> None:
+    import hashlib
+
+    record = store.put_text("abc")
+    assert record.spill_id == hashlib.sha256(b"abc").hexdigest()
+
+
+def test_record_as_dict(store: SpillStore) -> None:
+    record = store.put_text("x", tool="t")
+    payload = record.as_dict()
+    assert payload["tool"] == "t"
+    assert payload["kind"] == "text"
