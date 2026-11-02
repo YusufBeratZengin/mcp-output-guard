@@ -78,9 +78,9 @@ Real output (pretty-printed for readability, the tool returned 37 149 characters
         "max_chars": 400,
         "total_chars": 37149,
         "shown_chars": 400,
-        "structured_content": "absent",
         "spill": "/home/you/.mcp-guard/spills/85650bc82f3ddeeddca95634c6cda8a95fea5ab278bab1631b3f7f62a02c7489.txt",
-        "hint": "The full output is on disk. Use output_guard_read(spill, offset, limit) ..."
+        "structured_content": "absent",
+        "hint": "The full output is on disk. Use output_guard_read(spill, offset, limit) to page through it, output_guard_grep(spill, pattern) to search it, or output_guard_sql(spill, query) if it is JSON/CSV."
       }
     }
   }
