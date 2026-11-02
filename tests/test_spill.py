@@ -151,6 +151,27 @@ def test_resolve_follows_symlink_out_of_store(store: SpillStore, tmp_path: Path)
         store.resolve("link.txt")
 
 
+def test_directory_with_spaces_and_unicode(tmp_path: Path) -> None:
+    store = SpillStore(tmp_path / "spill dir ü nit")
+    record = store.put_text("x" * 10)
+    assert record.path.parent.name == "spill dir ü nit"
+    assert record.path.exists()
+    assert store.read(record.spill_id, limit=5)["text"] == "xxxxx"
+
+
+def test_resolve_rejects_paths_on_another_windows_drive(
+    store: SpillStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    record = store.put_text("inside")
+
+    def different_drive(*args: object, **kwargs: object) -> str:
+        raise ValueError("path is on mount 'D:', start on mount 'C:'")
+
+    monkeypatch.setattr("mcp_output_guard.spill.os.path.commonpath", different_drive)
+    with pytest.raises(SpillError, match="outside the spill directory"):
+        store.resolve(str(record.path))
+
+
 def test_list_and_stats(store: SpillStore) -> None:
     assert store.list() == []
     record = store.put_text("listed", tool="t1")
