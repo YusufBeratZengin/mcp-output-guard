@@ -218,7 +218,7 @@ python -m pip install -e ".[dev]"
 bash scripts/check.sh        # ruff + mypy + pytest, --cov-fail-under=85
 ```
 
-Güncel durum: 171 test, %94 satır+dallanma kapsamı, Linux ve Windows CI.
+Güncel durum: 176 test, %95 satır+dallanma kapsamı, Linux ve Windows CI.
 
 ## Lisans
 

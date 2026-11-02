@@ -223,7 +223,7 @@ python -m pip install -e ".[dev]"
 bash scripts/check.sh        # ruff + mypy + pytest with --cov-fail-under=85
 ```
 
-Current state: 171 tests, 94% line+branch coverage, Linux and Windows CI.
+Current state: 176 tests, 95% line+branch coverage, Linux and Windows CI.
 
 ## License
 
