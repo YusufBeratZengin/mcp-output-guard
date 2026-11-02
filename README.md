@@ -231,7 +231,7 @@ bash scripts/check.sh        # ruff + mypy + pytest with --cov-fail-under=85
 `bash examples/demo.sh` replays the walkthrough above against the bundled fake server and prints
 the spill path, a paged read and a grep.
 
-Current state: 181 tests, 94% line+branch coverage, Linux and Windows CI.
+Current state: 183 tests, 94% line+branch coverage, Linux and Windows CI.
 
 ## License
 
