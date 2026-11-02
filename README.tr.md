@@ -225,7 +225,7 @@ bash scripts/check.sh        # ruff + mypy + pytest, --cov-fail-under=85
 `bash examples/demo.sh` yukarıdaki akışı paketteki sahte sunucuyla yeniden oynatır; spill
 yolunu, sayfalı okumayı ve grep sonucunu basar.
 
-Güncel durum: 176 test, %95 satır+dallanma kapsamı, Linux ve Windows CI.
+Güncel durum: 179 test, %95 satır+dallanma kapsamı, Linux ve Windows CI.
 
 ## Lisans
 
