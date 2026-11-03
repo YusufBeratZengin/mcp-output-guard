@@ -217,8 +217,9 @@ clean it up. Nothing is ever sent over the network by this tool.
   tokens, not a measurement of them; CJK and code are denser than prose.
 - JSON-RPC **batches** are guarded only for the requests the proxy sees individually; virtual
   tools inside a batch are forwarded to the server rather than answered locally.
-- Deeply nested `structuredContent` is pruned one list at a time, largest first; it is not a
-  query engine for arbitrary schemas.
+- Deeply nested `structuredContent` is pruned one list at a time, largest first; when the server
+  advertises an `outputSchema`, `minItems` is honoured and length-pinned lists (`prefixItems`,
+  `contains`) are left untrimmed. It is not a query engine for arbitrary schemas.
 - The proxy is single-process, single-connection, and does not multiplex.
 
 ## Development
@@ -231,7 +232,7 @@ bash scripts/check.sh        # ruff + mypy + pytest with --cov-fail-under=85
 `bash examples/demo.sh` replays the walkthrough above against the bundled fake server and prints
 the spill path, a paged read and a grep.
 
-Current state: 183 tests, 94% line+branch coverage, Linux and Windows CI.
+Current state: 192 tests, 93% line+branch coverage, Linux and Windows CI.
 
 ## License
 

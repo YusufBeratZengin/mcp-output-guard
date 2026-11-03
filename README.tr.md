@@ -213,8 +213,9 @@ araç hiçbir şeyi ağa göndermez.
 - Kesme **karakter** ile ölçülür, token ile değil. Karakter bütçesi token'ın göstergesidir,
   ölçümü değil; CJK metin ve kod, düz yazıdan daha yoğundur.
 - JSON-RPC **batch** isteklerinde sanal araçlar sunucuya iletilir, proxy yanıtlamaz.
-- İç içe `structuredContent` en büyük listeden başlanarak budanır; keyfi şemalar için sorgu
-  motoru değildir.
+- İç içe `structuredContent` en büyük listeden başlanarak budanır; sunucu `outputSchema`
+  bildiriyorsa `minItems` korunur, uzunluğu sabitlenmiş listeler (`prefixItems`, `contains`)
+  budanmaz. Keyfi şemalar için sorgu motoru değildir.
 - Proxy tek süreç, tek bağlantı çalışır; çoklama yapmaz.
 
 ## Geliştirme
@@ -227,7 +228,7 @@ bash scripts/check.sh        # ruff + mypy + pytest, --cov-fail-under=85
 `bash examples/demo.sh` yukarıdaki akışı paketteki sahte sunucuyla yeniden oynatır; spill
 yolunu, sayfalı okumayı ve grep sonucunu basar.
 
-Güncel durum: 183 test, %94 satır+dallanma kapsamı, Linux ve Windows CI.
+Güncel durum: 192 test, %93 satır+dallanma kapsamı, Linux ve Windows CI.
 
 ## Lisans
 

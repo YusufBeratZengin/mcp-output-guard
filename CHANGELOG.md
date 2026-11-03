@@ -23,7 +23,8 @@ First release.
   surrogate pairs.
 - Multiple `content` blocks share one budget, in order; omitted blocks are counted in the note.
 - `structuredContent` above the limit keeps its schema and the first K records; totals are
-  reported in `_meta`.
+  reported in `_meta`. Nested lists are pruned largest-first, and an advertised `outputSchema`
+  is respected (`minItems` kept, `prefixItems`/`contains` lists left untouched).
 - Base64 image/audio blocks above `--image-max-chars` are decoded to real files and replaced
   with a pointer block, never sliced mid-payload.
 - Virtual tools injected into `tools/list`: `output_guard_read`, `output_guard_grep`,
@@ -33,6 +34,6 @@ First release.
   symlink containment, TTL cleanup and listing.
 - CLI: `spills list|stats|clean`, `read` with `--offset/--limit/--grep/--sql`.
 - Windows support, including `cmd /c` wrapping for `.cmd`/`.bat` server shims such as `npx`.
-- 183 tests, 94% line+branch coverage, ruff and mypy in CI on Linux and Windows.
+- 192 tests, 93% line+branch coverage, ruff and mypy in CI on Linux and Windows.
 
 [0.1.0]: https://github.com/YusufBeratZengin/mcp-output-guard/releases/tag/v0.1.0
