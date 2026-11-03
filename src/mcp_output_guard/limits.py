@@ -14,6 +14,7 @@ The contract, in order of importance:
 
 from __future__ import annotations
 
+import copy
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -160,49 +161,135 @@ def _keep_count(items: Sequence[Any], budget: int, min_keep: int) -> int:
     return max(min_keep, min(kept, len(items)))
 
 
-def prune_structured(
-    value: Any, max_chars: int, *, min_keep: int = 1
-) -> tuple[Any, dict[str, Any] | None]:
-    """Keep the shape of a structured payload but only its first rows.
+def _list_paths(value: Any, prefix: tuple[str, ...] = ()) -> list[tuple[tuple[str, ...], list[Any]]]:
+    """Every non-empty list reachable through object keys, with its path.
 
-    A 1000-element array stays an array of the same element type; the count of
-    what was dropped is reported separately (in ``_meta``) so the JSON schema a
-    server advertised is not polluted with invented keys.
+    Lists nested inside list *items* are deliberately not descended into: a
+    record must not be reshaped, only dropped whole. This still reaches
+    ``{"data": {"items": [...]}}`` as well as the top-level array.
+    """
+    if isinstance(value, list):
+        return [(prefix, value)]
+    found: list[tuple[tuple[str, ...], list[Any]]] = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if isinstance(item, list):
+                if item:
+                    found.append((prefix + (str(key),), item))
+            elif isinstance(item, dict):
+                found.extend(_list_paths(item, prefix + (str(key),)))
+    return found
+
+
+def _get_at(value: Any, path: tuple[str, ...]) -> Any:
+    for key in path:
+        if not isinstance(value, Mapping):
+            return None
+        value = value[key]
+    return value
+
+
+def _set_at(value: Any, path: tuple[str, ...], new: Any) -> None:
+    if not path:
+        raise ValueError("cannot replace the root in place")
+    target = _get_at(value, path[:-1])
+    if isinstance(target, dict):
+        target[path[-1]] = new
+
+
+def _schema_node(schema: Mapping[str, Any] | None, path: tuple[str, ...]) -> Any:
+    node: Any = schema
+    for key in path:
+        if not isinstance(node, Mapping):
+            return None
+        properties = node.get("properties")
+        node = properties.get(key) if isinstance(properties, Mapping) else None
+    return node
+
+
+def _min_items(schema: Mapping[str, Any] | None, path: tuple[str, ...]) -> int:
+    """``minItems`` declared for the list at ``path``, or 0 when unknown."""
+    node = _schema_node(schema, path)
+    if isinstance(node, Mapping):
+        declared = node.get("minItems")
+        if isinstance(declared, int) and not isinstance(declared, bool) and declared > 0:
+            return declared
+    return 0
+
+
+def _schema_pins_length(schema: Mapping[str, Any] | None, path: tuple[str, ...]) -> bool:
+    """True when pruning this list could violate a constraint we do not model."""
+    node = _schema_node(schema, path)
+    if not isinstance(node, Mapping):
+        return False
+    # Fixed-length tuples and "must contain" rules are not preserved by
+    # truncating the tail, so such a list is left untouched.
+    return bool(node.get("prefixItems")) or bool(node.get("contains"))
+
+
+def prune_structured(
+    value: Any,
+    max_chars: int,
+    *,
+    min_keep: int = 1,
+    schema: Mapping[str, Any] | None = None,
+) -> tuple[Any, dict[str, Any] | None]:
+    """Trim lists inside a structured payload while keeping its shape.
+
+    Arrays stay arrays, objects stay objects and every surviving element is a
+    complete original element - only trailing elements are dropped. Lists are
+    filled largest-first, at any depth reachable through object keys.
+
+    When the server's ``outputSchema`` is known (the proxy records it from
+    ``tools/list``) the pruner also honours the list's ``minItems`` and refuses
+    to touch lists whose length is pinned by ``prefixItems`` or ``contains``;
+    a list that cannot be trimmed without breaking the schema is skipped. Other
+    schema keywords are unaffected because no element is ever rewritten.
+
+    The count of what was dropped is returned separately and reported in
+    ``_meta``, never injected into the payload itself.
     """
     if _json_size(value) <= max_chars:
         return value, None
 
-    if isinstance(value, list):
-        if not value:
-            return value, None
-        kept = _keep_count(value, max_chars, min_keep)
-        return list(value[:kept]), {
-            "fields": [{"field": None, "total_items": len(value), "shown_items": kept}]
-        }
+    paths = _list_paths(value)
+    if not paths:
+        return value, None
+    paths.sort(key=lambda item: _json_size(item[1]), reverse=True)
 
-    if isinstance(value, dict):
-        list_fields = [(k, v) for k, v in value.items() if isinstance(v, list) and v]
-        if not list_fields:
-            return value, None
-        list_fields.sort(key=lambda kv: _json_size(kv[1]), reverse=True)
-        out = dict(value)
-        reports: list[dict[str, Any]] = []
-        for key, items in list_fields:
-            if _json_size(out) <= max_chars:
-                break
-            overhead = _json_size({k: v for k, v in out.items() if k != key})
-            floor = _json_size(items[:min_keep]) + 2
-            budget = max(max_chars - overhead, floor)
-            kept = _keep_count(items, budget, min_keep)
-            if kept >= len(items):
-                continue
-            out[key] = items[:kept]
-            reports.append({"field": key, "total_items": len(items), "shown_items": kept})
-        if not reports:
-            return value, None
-        return out, {"fields": reports}
-
-    return value, None
+    out = copy.deepcopy(value)
+    reports: list[dict[str, Any]] = []
+    for path, _items in paths:
+        if _json_size(out) <= max_chars:
+            break
+        if schema is not None and _schema_pins_length(schema, path):
+            continue
+        node = _get_at(out, path)
+        if not isinstance(node, list) or not node:
+            continue
+        floor = max(1, min_keep, _min_items(schema, path))
+        if len(node) <= floor:
+            continue
+        overhead = _json_size(out) - _json_size(node)
+        floor_size = _json_size(node[:floor]) + 2
+        budget = max(max_chars - overhead, floor_size)
+        kept = _keep_count(node, budget, floor)
+        if kept >= len(node):
+            continue
+        if path:
+            _set_at(out, path, node[:kept])
+        else:
+            out = node[:kept]
+        reports.append(
+            {
+                "field": ".".join(path) if path else None,
+                "total_items": len(node),
+                "shown_items": kept,
+            }
+        )
+    if not reports:
+        return value, None
+    return out, {"fields": reports}
 
 
 def _structured_status(
@@ -225,12 +312,16 @@ def limit_result(
     note_lang: str = "en",
     image_max_chars: int = DEFAULT_IMAGE_MAX_CHARS,
     reserve_note: bool = False,
+    output_schema: Mapping[str, Any] | None = None,
 ) -> tuple[Any, dict[str, Any] | None]:
     """Apply the guard to one ``tools/call`` result.
 
     Returns ``(result, spill_info)``. When nothing had to change the *same*
     object comes back with ``spill_info is None``; callers rely on that to keep
     the untouched response byte-identical.
+
+    ``output_schema`` is the tool's advertised schema, when the proxy has seen
+    it in ``tools/list``; it only affects how ``structuredContent`` is pruned.
     """
     if max_chars <= 0:
         raise ValueError("max_chars must be positive")
@@ -303,7 +394,7 @@ def limit_result(
     # Structured payload: keep the schema, drop the tail.
     structured_info: dict[str, Any] | None = None
     if structured_oversized:
-        pruned, structured_info = prune_structured(structured, max_chars)
+        pruned, structured_info = prune_structured(structured, max_chars, schema=output_schema)
         if structured_info is not None:
             result = dict(result)
             result["structuredContent"] = pruned

@@ -183,6 +183,79 @@ def test_tools_list_without_tools_key(tmp_path: Path) -> None:
     assert proxy.handle_server_message(raw) is raw
 
 
+def test_output_schema_from_tools_list_protects_structured_lists(tmp_path: Path) -> None:
+    proxy, _ = make_proxy(tmp_path, max_chars=200)
+    proxy.handle_client_message(
+        framing.encode_message({"jsonrpc": "2.0", "id": 40, "method": "tools/list"})
+    )
+    listing = response_message(
+        40,
+        {
+            "tools": [
+                {
+                    "name": "pair_tool",
+                    "inputSchema": {},
+                    "outputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "pair": {"type": "array", "prefixItems": [{}, {}]},
+                        },
+                    },
+                }
+            ]
+        },
+    )
+    proxy.handle_server_message(listing)
+
+    proxy.handle_client_message(call_message(41, "pair_tool"))
+    raw = response_message(
+        41,
+        {
+            "content": [{"type": "text", "text": "ok"}],
+            "structuredContent": {"pair": [{"x": "a" * 100}, {"x": "b" * 100}, {"x": "c" * 100}]},
+        },
+    )
+    message = json.loads(proxy.handle_server_message(raw))
+    guard = message["result"]["_meta"]["output_guard"]
+    # The schema pins the tuple's length, so the list is left untouched and the
+    # model is told the structured part is complete-but-oversized.
+    assert message["result"]["structuredContent"]["pair"][2]["x"] == "c" * 100
+    assert guard["structured_content"] == "oversized_but_unchanged"
+    assert "structured" not in guard
+
+
+def test_output_schema_min_items_is_enforced_end_to_end(tmp_path: Path) -> None:
+    proxy, _ = make_proxy(tmp_path, max_chars=200)
+    proxy.handle_client_message(
+        framing.encode_message({"jsonrpc": "2.0", "id": 42, "method": "tools/list"})
+    )
+    proxy.handle_server_message(
+        response_message(
+            42,
+            {
+                "tools": [
+                    {
+                        "name": "db_query",
+                        "inputSchema": {},
+                        "outputSchema": {
+                            "type": "object",
+                            "properties": {"rows": {"type": "array", "minItems": 5}},
+                        },
+                    }
+                ]
+            },
+        )
+    )
+    proxy.handle_client_message(call_message(43, "db_query"))
+    rows = [{"id": i, "pad": "z" * 20} for i in range(100)]
+    raw = response_message(
+        43,
+        {"content": [{"type": "text", "text": "ok"}], "structuredContent": {"rows": rows}},
+    )
+    message = json.loads(proxy.handle_server_message(raw))
+    assert len(message["result"]["structuredContent"]["rows"]) == 5
+
+
 def test_virtual_tool_call_is_answered_locally(tmp_path: Path) -> None:
     proxy, out = make_proxy(tmp_path)
     record = proxy.store.put_text("0123456789")

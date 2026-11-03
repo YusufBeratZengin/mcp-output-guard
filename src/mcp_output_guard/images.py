@@ -49,22 +49,54 @@ class BinaryPayloadError(ValueError):
     """Raised when a binary block carries data that is not valid base64."""
 
 
+def _embedded_resource(block: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """The nested ``resource`` object of an MCP EmbeddedResource, if any."""
+    if block.get("type") != "resource":
+        return None
+    inner = block.get("resource")
+    return inner if isinstance(inner, Mapping) else None
+
+
+def _binary_source(block: Mapping[str, Any]) -> tuple[str | None, str | None]:
+    """Return ``(base64_payload, mime_type)`` for a block, in either shape.
+
+    MCP spells an embedded resource as
+    ``{"type": "resource", "resource": {"uri": ..., "mimeType": ..., "blob": ...}}``
+    (2025-06-18 schema), while older/looser servers put ``blob`` at the top
+    level. Both are accepted; the nested field wins when present.
+    """
+    mime = block.get("mimeType") if isinstance(block.get("mimeType"), str) else None
+    inner = _embedded_resource(block)
+    data: Any = None
+    if inner is not None:
+        data = inner.get("blob")
+        if isinstance(inner.get("mimeType"), str):
+            mime = inner["mimeType"]
+    if not isinstance(data, str):
+        data = block.get("data")
+    if not isinstance(data, str):
+        data = block.get("blob")
+    return (data if isinstance(data, str) else None), mime
+
+
 def is_binary_block(block: Any) -> bool:
-    """True for content blocks that carry base64 payloads in ``data``."""
+    """True for content blocks that carry a base64 payload (``data``/``blob``)."""
     if not isinstance(block, Mapping):
         return False
     block_type = block.get("type")
     if block_type in BINARY_BLOCK_TYPES:
-        return isinstance(block.get("data"), str)
-    return block_type == "resource" and isinstance(block.get("blob"), str)
+        data, _ = _binary_source(block)
+        return data is not None
+    if block_type == "resource":
+        data, _ = _binary_source(block)
+        return data is not None
+    return False
 
 
 def payload_chars(block: Mapping[str, Any]) -> int:
     """Number of characters the block's base64 payload occupies in the context."""
-    data = block.get("data")
-    if not isinstance(data, str):
-        data = block.get("blob")
-    return len(data) if isinstance(data, str) else 0
+    data, _ = _binary_source(block)
+    return len(data) if data is not None else 0
 
 
 def suffix_for_mime(mime: str | None, *, block_type: str = "image") -> str:
@@ -100,15 +132,8 @@ def spill_binary_block(
     information the model needs: media type, real size and a readable path.
     """
     block_type = str(block.get("type", "binary"))
-    mime = block.get("mimeType") if isinstance(block.get("mimeType"), str) else None
-    if block_type == "resource" and isinstance(block.get("resource"), Mapping):
-        inner = block["resource"]
-        if isinstance(inner.get("mimeType"), str):
-            mime = inner["mimeType"]
-    raw_data = block.get("data")
-    if not isinstance(raw_data, str):
-        raw_data = block.get("blob")
-    if not isinstance(raw_data, str):
+    raw_data, mime = _binary_source(block)
+    if raw_data is None:
         raise BinaryPayloadError("binary block has no base64 payload")
 
     encoded = raw_data.strip()

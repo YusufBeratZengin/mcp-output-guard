@@ -240,6 +240,59 @@ def test_prune_structured_empty_list() -> None:
     assert info is None and pruned == []
 
 
+def test_prune_structured_honours_min_items_from_schema() -> None:
+    rows = [{"id": i, "name": f"row-{i:04d}"} for i in range(500)]
+    value = {"rows": rows}
+    schema = {
+        "type": "object",
+        "properties": {"rows": {"type": "array", "minItems": 25, "items": {"type": "object"}}},
+    }
+    # Without the schema the budget would keep a handful of rows.
+    _, unschema_info = prune_structured(value, 300)
+    assert unschema_info is not None
+    assert unschema_info["fields"][0]["shown_items"] < 25
+
+    pruned, info = prune_structured(value, 300, schema=schema)
+    assert info is not None
+    assert len(pruned["rows"]) == 25
+    assert pruned["rows"] == rows[:25]
+
+
+def test_prune_structured_skips_lists_with_pinned_length() -> None:
+    value = {"pair": [{"x": i} for i in range(100)], "rows": [{"id": i} for i in range(500)]}
+    schema = {
+        "type": "object",
+        "properties": {
+            "pair": {"type": "array", "prefixItems": [{"type": "object"}, {"type": "object"}]},
+            "rows": {"type": "array", "contains": {"type": "object"}},
+        },
+    }
+    pruned, info = prune_structured(value, 60, schema=schema)
+    assert info is None and pruned is value
+
+
+def test_prune_structured_skips_only_the_pinned_list() -> None:
+    value = {"pinned": [{"x": 0}], "rows": [{"id": i, "pad": "z" * 10} for i in range(200)]}
+    schema = {
+        "type": "object",
+        "properties": {
+            "pinned": {"type": "array", "prefixItems": [{"type": "object"}]},
+            "rows": {"type": "array"},
+        },
+    }
+    pruned, info = prune_structured(value, 300, schema=schema)
+    assert info is not None
+    assert len(pruned["pinned"]) == 1
+    assert len(pruned["rows"]) < 200
+    assert info["fields"][0]["field"] == "rows"
+
+
+def test_prune_structured_schema_without_properties_is_ignored() -> None:
+    value = {"rows": [{"id": i, "pad": "z" * 10} for i in range(200)]}
+    pruned, info = prune_structured(value, 300, schema={"type": "object"})
+    assert info is not None and len(pruned["rows"]) < 200
+
+
 def test_format_note_falls_back_to_english() -> None:
     assert "TRUNCATED" in format_note("xx", total=1, shown=1, path="/tmp/a")
 

@@ -55,6 +55,30 @@ def test_read_line_rejects_oversized_line(monkeypatch: pytest.MonkeyPatch) -> No
         framing.read_line(io.BytesIO(b"x" * 20 + b"\n"))
 
 
+def test_read_line_accepts_a_line_exactly_at_the_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(framing, "MAX_LINE_BYTES", 10)
+    stream = io.BytesIO(b"x" * 10 + b"\n" + b"next\n")
+    assert framing.read_line(stream) == b"x" * 10
+    assert framing.read_line(stream) == b"next"
+
+
+def test_read_line_accepts_crlf_at_the_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(framing, "MAX_LINE_BYTES", 10)
+    stream = io.BytesIO(b"x" * 10 + b"\r\n" + b"next\n")
+    assert framing.read_line(stream) == b"x" * 10
+    assert framing.read_line(stream) == b"next"
+
+
+def test_read_line_drains_the_tail_of_an_oversized_line(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The tail must be consumed, otherwise it would be parsed as the next
+    # message and the session would fail with a bogus protocol error.
+    monkeypatch.setattr(framing, "MAX_LINE_BYTES", 10)
+    stream = io.BytesIO(b"x" * 5000 + b"\n" + b"after\n")
+    with pytest.raises(framing.FramingError, match="dropped"):
+        framing.read_line(stream)
+    assert framing.read_line(stream) == b"after"
+
+
 def test_write_line_appends_newline_and_flushes() -> None:
     stream = io.BytesIO()
     framing.write_line(stream, b'{"a":1}')

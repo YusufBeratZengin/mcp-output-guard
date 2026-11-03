@@ -126,6 +126,9 @@ class Proxy:
 
         self._pending: dict[str, PendingCall] = {}
         self._pending_lock = threading.Lock()
+        # outputSchema per tool, learned from tools/list. Guard results are
+        # handled on the same reader thread, so no lock is needed.
+        self._tool_schemas: dict[str, dict[str, Any]] = {}
         self._client_lock = threading.Lock()
         self._server_in: IO[bytes] | None = None
         self._server_out: IO[bytes] | None = None
@@ -241,6 +244,7 @@ class Proxy:
             return None
 
         if pending.method == "tools/list":
+            self._record_tool_schemas(message["result"])
             first_page = not pending.params.get("cursor")
             if self.virtual_tools and self._inject_tools(message["result"], first_page=first_page):
                 return message
@@ -263,6 +267,7 @@ class Proxy:
                 note_lang=self.note_lang,
                 image_max_chars=self.image_max_chars,
                 reserve_note=self.reserve_note,
+                output_schema=self._tool_schemas.get(pending.tool or ""),
             )
         except (OSError, SpillError, ValueError) as exc:
             # Fail open: a full disk or an unwritable spill directory must not
@@ -281,6 +286,19 @@ class Proxy:
         self.stats.binaries_spilled += 1 if info.get("binary") else 0
         message["result"] = guarded
         return message
+
+    def _record_tool_schemas(self, result: dict[str, Any]) -> None:
+        """Remember each tool's ``outputSchema`` for later structured pruning."""
+        tools = result.get("tools")
+        if not isinstance(tools, list):
+            return
+        for tool in tools:
+            if not isinstance(tool, dict):
+                continue
+            name = tool.get("name")
+            schema = tool.get("outputSchema")
+            if isinstance(name, str) and isinstance(schema, dict):
+                self._tool_schemas[name] = schema
 
     @staticmethod
     def _inject_tools(result: dict[str, Any], *, first_page: bool = True) -> bool:

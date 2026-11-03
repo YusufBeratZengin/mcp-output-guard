@@ -12,6 +12,7 @@ from typing import IO, Any
 
 __all__ = [
     "FramingError",
+    "MAX_LINE_BYTES",
     "decode_message",
     "encode_message",
     "read_line",
@@ -22,9 +23,12 @@ __all__ = [
 #: be able to exhaust the proxy's memory; 128 MiB is far above any sane result.
 MAX_LINE_BYTES = 128 * 1024 * 1024
 
+#: Chunk size used to discard the remainder of an oversized line.
+_DRAIN_CHUNK = 64 * 1024
+
 
 class FramingError(ValueError):
-    """Raised when a line is not valid UTF-8 JSON."""
+    """Raised when a line is not valid UTF-8 JSON or exceeds the size limit."""
 
 
 def encode_message(message: Any) -> bytes:
@@ -52,17 +56,44 @@ def decode_message(raw: bytes) -> Any:
         raise FramingError(f"invalid JSON in message: {exc}") from exc
 
 
+def _discard_rest_of_line(stream: IO[bytes]) -> None:
+    """Consume bytes up to and including the next newline (or EOF).
+
+    An oversized line must not leave its tail in the stream, where it would be
+    mistaken for the next message. The discard reads in bounded chunks and
+    therefore never grows memory with the line.
+    """
+    while True:
+        try:
+            chunk = stream.readline(_DRAIN_CHUNK)
+        except (OSError, ValueError):  # pragma: no cover - stream died mid-line
+            return
+        if not chunk or chunk.endswith(b"\n"):
+            return
+
+
 def read_line(stream: IO[bytes]) -> bytes | None:
-    """Read one line from ``stream``.
+    """Read one line from ``stream`` without ever buffering it unbounded.
+
+    The read is capped at :data:`MAX_LINE_BYTES`; a longer line raises
+    :class:`FramingError` *after* its remainder has been consumed, so the
+    caller can drop just that message and keep reading the stream.
 
     Returns the line without its trailing ``\\n`` (and optional ``\\r``), or
     ``None`` at end of stream. A final line without a newline is returned as-is.
     """
-    raw = stream.readline()
+    raw = stream.readline(MAX_LINE_BYTES + 2)
     if not raw:
         return None
     if len(raw) > MAX_LINE_BYTES:
-        raise FramingError(f"message exceeds {MAX_LINE_BYTES} bytes")
+        # MAX bytes of content plus an LF (and optionally a CR) is still a
+        # valid line; anything else is over budget and must not be parsed.
+        content = raw[:-1] if raw.endswith(b"\n") else raw
+        if content.endswith(b"\r"):
+            content = content[:-1]
+        if len(content) > MAX_LINE_BYTES:
+            _discard_rest_of_line(stream)
+            raise FramingError(f"message exceeds {MAX_LINE_BYTES} bytes; dropped")
     if raw.endswith(b"\n"):
         raw = raw[:-1]
         if raw.endswith(b"\r"):
