@@ -34,6 +34,6 @@ First release.
   symlink containment, TTL cleanup and listing.
 - CLI: `spills list|stats|clean`, `read` with `--offset/--limit/--grep/--sql`.
 - Windows support, including `cmd /c` wrapping for `.cmd`/`.bat` server shims such as `npx`.
-- 192 tests, 93% line+branch coverage, ruff and mypy in CI on Linux and Windows.
+- 195 tests, 93% line+branch coverage, ruff and mypy in CI on Linux and Windows.
 
 [0.1.0]: https://github.com/YusufBeratZengin/mcp-output-guard/releases/tag/v0.1.0

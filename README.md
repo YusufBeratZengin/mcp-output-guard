@@ -134,7 +134,7 @@ On Windows the proxy resolves `npx.cmd` shims automatically, so the same line wo
 | JSON-RPC error response | Never touched |
 | Several `content` blocks | The budget is shared in order; leftover blocks are counted in the note |
 | Multi-byte text | Cut on a character boundary, never mid code point or mid surrogate pair |
-| `structuredContent` over the limit | First K records kept, schema untouched, counts reported in `_meta` |
+| `structuredContent` over the limit | First K records kept (honours known `outputSchema` constraints: `minItems`, `prefixItems`/`contains`), counts reported in `_meta` |
 | Base64 image/audio over `--image-max-chars` | Decoded, written to a real file, replaced by a pointer + size |
 | Broken base64 | Left exactly as it came, flagged in `_meta.output_guard.binary` |
 | Spill directory unwritable or full | **Fails open**: the result is forwarded unguarded, a warning goes to stderr and the call is counted in `--stats` |
@@ -201,7 +201,10 @@ proxy decides to forward the original bytes.
 Tool output routinely contains secrets: environment dumps, customer rows, tokens echoed in
 logs. The guard:
 
-- creates the spill directory with mode `0700` and files with `0600`;
+- creates the spill directory with mode `0700` and files with `0600` on POSIX systems (on
+  Windows, `os.chmod` cannot alter NTFS ACLs and only toggles the read-only attribute; spill
+  files inherit the directory's access control, so configure directory ACLs or point
+  `--spill-dir` at an already-restricted location);
 - names files after the SHA-256 of their content (identical payloads deduplicate);
 - refuses to read any path that resolves outside the spill directory, including via symlinks;
 - can prune old files with `mcp-output-guard spills clean --ttl-seconds 3600`.
@@ -215,6 +218,10 @@ clean it up. Nothing is ever sent over the network by this tool.
 - Only the **stdio** transport is supported. HTTP/SSE servers are out of scope.
 - Truncation is measured in **characters**, not tokens. A character budget is a proxy for
   tokens, not a measurement of them; CJK and code are denser than prose.
+- **Windows file permissions**: Mode `0700` and `0600` permissions rely on POSIX bits. On Windows,
+  `os.chmod` does not alter NTFS ACLs; spill files inherit the access control of their parent
+  directory. Set explicit directory ACLs (e.g. using `icacls`) if multiple local users share
+  the host.
 - JSON-RPC **batches** are guarded only for the requests the proxy sees individually; virtual
   tools inside a batch are forwarded to the server rather than answered locally.
 - Deeply nested `structuredContent` is pruned one list at a time, largest first; when the server
@@ -229,10 +236,14 @@ python -m pip install -e ".[dev]"
 bash scripts/check.sh        # ruff + mypy + pytest with --cov-fail-under=85
 ```
 
+`check.sh` finds an interpreter that has the dev tools (or provisions `.venv` and installs
+`.[dev]` into it), so running it without a prepared environment still works; `PYTHON=...`
+forces one, `CHECK_BOOTSTRAP=0` disables the install step.
+
 `bash examples/demo.sh` replays the walkthrough above against the bundled fake server and prints
 the spill path, a paged read and a grep.
 
-Current state: 192 tests, 93% line+branch coverage, Linux and Windows CI.
+Current state: 195 tests, 93% line+branch coverage, Linux and Windows CI.
 
 ## License
 

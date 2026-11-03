@@ -25,6 +25,11 @@ def test_put_text_writes_file_with_restrictive_mode(store: SpillStore, tmp_path:
     if os.name != "nt":
         assert stat.S_IMODE(record.path.stat().st_mode) == 0o600
         assert stat.S_IMODE(store.directory.stat().st_mode) == 0o700
+    else:
+        # On Windows, os.chmod only toggles read-only bits and cannot manage NTFS ACLs;
+        # files inherit directory ACLs and remain readable/writable for the current user.
+        assert os.access(record.path, os.R_OK | os.W_OK)
+        assert os.access(store.directory, os.R_OK | os.W_OK | os.X_OK)
 
 
 def test_identical_payloads_deduplicate(store: SpillStore) -> None:

@@ -15,6 +15,13 @@ bash scripts/check.sh
 `scripts/check.sh` is the same gate CI runs: ruff, mypy and pytest with a hard 85% coverage
 floor. A pull request that does not make it pass locally will not pass in CI either.
 
+The gate picks its own interpreter: an explicit `PYTHON=/path/to/python` wins, otherwise it
+scans `PATH`, project virtualenvs and the usual install prefixes for a Python that can import
+ruff, mypy, pytest and pytest-cov. If none exists it creates a project-local `.venv` and
+installs `.[dev]` there, so `bash scripts/check.sh` works from a bare checkout. Set
+`CHECK_BOOTSTRAP=0` to forbid that network step (the script then exits 1 with the exact
+`pip install` command to run).
+
 ## What a good change looks like
 
 - **A test that fails first.** For bug fixes, add the failing test (or paste the failing case in

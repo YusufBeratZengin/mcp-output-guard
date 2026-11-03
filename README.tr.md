@@ -131,7 +131,7 @@ Windows'ta `npx.cmd` gibi sarmalayıcılar otomatik çözülür; aynı satır or
 | JSON-RPC hata yanıtı | Hiç dokunulmaz |
 | Birden çok `content` bloğu | Bütçe sırayla paylaşılır, artan bloklar notta sayılır |
 | Çok baytlı metin | Karakter sınırında kesilir; kod noktası veya surrogate çifti bölünmez |
-| `structuredContent` sınırın üstünde | İlk K kayıt kalır, şema bozulmaz, sayılar `_meta`'da |
+| `structuredContent` sınırın üstünde | İlk K kayıt kalır (bilinen `outputSchema` kurallarına uyar: `minItems`, `prefixItems`/`contains`); sayılar `_meta`'da |
 | Base64 görsel/ses büyük | Çözülür, gerçek dosyaya yazılır, yerine yol + boyut konur |
 | Bozuk base64 | Olduğu gibi bırakılır, `_meta.output_guard.binary` içinde işaretlenir |
 | Spill klasörü yazılamıyor / disk dolu | **Açık hata (fail open)**: sonuç korumasız iletilir, stderr'e uyarı yazılır ve çağrı `--stats`'ta sayılır |
@@ -198,7 +198,10 @@ orijinal baytları bu sayede olduğu gibi iletebiliyor.
 Araç çıktısı sık sık sır içerir: ortam değişkeni dökümleri, müşteri satırları, loglara düşmüş
 token'lar. Guard şunları yapar:
 
-- spill klasörünü `0700`, dosyaları `0600` izniyle oluşturur;
+- spill klasörünü POSIX sistemlerde `0700`, dosyaları `0600` izniyle oluşturur (Windows'ta
+  `os.chmod` NTFS ACL'lerini değiştirmez ve yalnızca salt okunur bayrağını etkiler; dosyalar üst
+  klasörün erişim politikasını devralır, bu nedenle Windows'ta klasör ACL'lerini ayrıca ayarlayın
+  veya `--spill-dir` ile önceden kısıtlanmış bir konum gösterin);
 - dosyaları içeriğin SHA-256'sıyla adlandırır (aynı yük tekrar yazılmaz);
 - spill klasörünün dışına çıkan yolları, sembolik bağlantı üzerinden bile, okumayı reddeder;
 - `mcp-output-guard spills clean --ttl-seconds 3600` ile eski dosyaları siler.
@@ -212,6 +215,10 @@ araç hiçbir şeyi ağa göndermez.
 - Yalnızca **stdio** taşıması desteklenir. HTTP/SSE kapsam dışı.
 - Kesme **karakter** ile ölçülür, token ile değil. Karakter bütçesi token'ın göstergesidir,
   ölçümü değil; CJK metin ve kod, düz yazıdan daha yoğundur.
+- **Windows dosya izinleri**: `0700` ve `0600` izinleri POSIX dosya modlarına dayanır. Windows'ta
+  `os.chmod` NTFS ACL'lerini yönetmez; dosyalar üst klasörün erişim politikasını devralır. Çok
+  kullanıcılı Windows ortamlarında `--spill-dir` klasörünün ACL'lerini (ör. `icacls` ile) ayrıca
+  kısıtlayın.
 - JSON-RPC **batch** isteklerinde sanal araçlar sunucuya iletilir, proxy yanıtlamaz.
 - İç içe `structuredContent` en büyük listeden başlanarak budanır; sunucu `outputSchema`
   bildiriyorsa `minItems` korunur, uzunluğu sabitlenmiş listeler (`prefixItems`, `contains`)
@@ -225,10 +232,14 @@ python -m pip install -e ".[dev]"
 bash scripts/check.sh        # ruff + mypy + pytest, --cov-fail-under=85
 ```
 
+`check.sh` geliştirme araçlarını içe aktarabilen bir yorumlayıcı arar; hiçbiri yoksa `.venv`
+oluşturup `.[dev]` kurar, yani hazırlanmamış bir ortamda da çalışır. `PYTHON=...` seçimi
+zorlar, `CHECK_BOOTSTRAP=0` kurulum adımını kapatır.
+
 `bash examples/demo.sh` yukarıdaki akışı paketteki sahte sunucuyla yeniden oynatır; spill
 yolunu, sayfalı okumayı ve grep sonucunu basar.
 
-Güncel durum: 192 test, %93 satır+dallanma kapsamı, Linux ve Windows CI.
+Güncel durum: 195 test, %93 satır+dallanma kapsamı, Linux ve Windows CI.
 
 ## Lisans
 

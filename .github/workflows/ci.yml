@@ -53,8 +53,12 @@ jobs:
         run: python -m pytest -q --cov=mcp_output_guard --cov-fail-under=85 --cov-report=term-missing
 
   check-script:
-    name: scripts/check.sh
-    runs-on: ubuntu-latest
+    name: scripts/check.sh (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
