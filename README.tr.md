@@ -156,9 +156,14 @@ böylece `WHERE id > 15` sayısal karşılaştırma olur; sorgudan önce bağlan
 alınır, yani spill dosyası asla değiştirilemez. Yüklenen dosyalar 50 MB güvenlik tavanıyla denetlenir.
 
 `output_guard_grep` spill dosyalarını belleğe bütünüyle yüklemeden satır satır akışla (streaming) tarar.
-ReDoS ifadelerinin proxy'yi kilitlemesini engellemek için iç içe nicelikleyiciler statik olarak reddedilir,
-satır uzunlukları 4.000 karakterle sınırlandırılır ve her satır öncesinde duvar saati bütçesi (`budget_seconds`)
-denetlenir.
+Python, çalışmakta olan tek bir `re` eşleşmesini kesemez; bu yüzden asıl koruma arama başlamadan önce
+devreye girer: bir niceleyicinin başka bir niceleyicinin içinde olduğu desenler (`(a+)+`) ve aynı metni
+eşleyebilen alternatifleri olan bir grubun sınırsız tekrarı (`(a|aa)+`, `(foo|foobar)*`, boş eşleşebilen
+dal) doğrulama sırasında reddedilir. Çözümleyicinin sınıflandıramadığı tekrarlı dallar da (`\d` veya `.`
+gibi açık uçlu bir sınıfın bir değişkenle yan yana gelmesi) reddedilir; çünkü yanlış bir "evet" proxy'yi
+kilitler. Böyle bir deseni karakter sınıfına (`^([\w.-])+$`) çevirin ya da alternatifleri ayrık yapın.
+İkinci katman olarak satırlar 4.000 karakterle sınırlandırılır ve her satır öncesinde duvar saati bütçesi
+(`budget_seconds`, varsayılan 5,0 sn) denetlenir.
 
 ## Komut satırı
 
@@ -225,7 +230,11 @@ araç hiçbir şeyi ağa göndermez.
   `os.chmod` NTFS ACL'lerini yönetmez; dosyalar üst klasörün erişim politikasını devralır. Çok
   kullanıcılı Windows ortamlarında `--spill-dir` klasörünün ACL'lerini (ör. `icacls` ile) ayrıca
   kısıtlayın.
-- JSON-RPC **batch** isteklerinde sanal araçlar sunucuya iletilir, proxy yanıtlamaz.
+- JSON-RPC **batch** istekleri öğe öğe işlenir: batch içindeki sanal `output_guard_*` çağrısı yerelde
+  yanıtlanır (kendi yanıt dizisinde, `id` ile eşleştirilir), yalnız kalan öğeler sunucuya iletilir; böylece
+  sunucu hiç bilmediği bir aracı görmez. Batch içindeki sunucu çağrılarının sonuçları tek çağrılardaki gibi
+  korunur. Yerelde yanıtlanan bir batch yeniden serileştirilir; yani bayt bayt garantisi tek mesajlar ve
+  hiç dokunulmayan batch'ler için geçerlidir.
 - İç içe `structuredContent` en büyük listeden başlanarak budanır; sunucu `outputSchema`
   bildiriyorsa `minItems` korunur, uzunluğu sabitlenmiş listeler (`prefixItems`, `contains`)
   budanmaz. Keyfi şemalar için sorgu motoru değildir.
@@ -245,7 +254,9 @@ Windows düzenlerini destekleyerek `.venv` oluşturup `.[dev]` kurar, yani hazı
 `bash examples/demo.sh` yukarıdaki akışı paketteki sahte sunucuyla yeniden oynatır; spill
 yolunu, sayfalı okumayı ve grep sonucunu basar.
 
-Güncel durum: 202 test, %93 satır+dallanma kapsamı, Linux ve Windows CI (`requirements-dev.lock` ile tekrarlanabilir ortam).
+Güncel durum: 222 test, ~%92 satır+dallanma kapsamı, Linux ve Windows CI. CI, `requirements-dev.lock`
+dosyasını kurar (`pip install -r requirements-dev.lock`, ardından `pip install -e . --no-deps`); yani yeşil
+bir koşu, o sabah `pip`'in çözdüğü sürümlerin değil sabitlenmiş araç zincirinin koşusudur.
 
 ## Lisans
 

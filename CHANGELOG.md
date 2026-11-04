@@ -15,6 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   support for `Scripts/python.exe`, enabling zero-setup developer gate execution on Windows.
 - Catastrophic backtracking defense in `output_guard_grep`: added static rejection of nested
   quantifiers (ReDoS risk), per-line wall-clock deadline checks, and 4,000-character line bounds.
+- `output_guard_grep` now also rejects an unbounded repetition of a group whose alternatives can
+  match the same text (`(a|aa)+`, `(foo|foobar)*`, a branch that can match nothing) and any
+  repeated branch whose first characters the analyser cannot bound (for example `(\d|x)+`).
+  Rejecting nested quantifiers alone left a hang reachable on a single 4,000-character line,
+  where the per-line deadline can never fire. Such patterns are refused up front with a message
+  that names the fix (character class or disjoint alternatives); `(alpha|beta)+` and `[\w.-]+`
+  keep working, and so do bounded repeats such as `(a|aa){1,3}`.
 
 ### Changed
 
@@ -22,8 +29,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   entire multi-megabyte spill files in RAM.
 - Memory safety limits: enforced 50 MB maximum file size on `read`, `grep`, and in-memory `sql`,
   with a 500,000-row limit on CSV SQLite imports.
-- Reproducible dependencies: added `requirements-dev.lock` with exact pinned versions of dev tools.
-- Test coverage expanded to 202 tests (~93% branch+line coverage).
+- Reproducible dependencies: `requirements-dev.lock` is now what CI installs
+  (`pip install -r requirements-dev.lock`, then `pip install -e . --no-deps`) instead of the
+  floating `.[dev]` range. `coverage` is pinned at 7.16.2, the newest release that still supports
+  the project's Python 3.10 floor; a test asserts the workflow never falls back to `.[dev]`.
+- JSON-RPC batches: virtual `output_guard_*` calls inside a batch are answered locally, in their
+  own response array (matched by `id`), and only the remaining items are forwarded to the server.
+  Previously they were forwarded and failed as unknown tools.
+- Test coverage expanded to 222 tests (~92% branch+line coverage).
 
 ## [0.1.0] - 2026-11-03
 

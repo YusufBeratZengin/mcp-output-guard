@@ -159,9 +159,15 @@ are inferred, so `WHERE id > 15` is numeric, and the connection is switched to `
 before the statement runs. Payloads are checked against a 50 MB in-memory safety limit.
 
 `output_guard_grep` streams files line-by-line rather than reading entire payloads into memory.
-To prevent ReDoS from blocking the proxy, nested repetitions are rejected at validation time,
-lines are capped at 4,000 characters, and a wall-clock deadline (`budget_seconds`, default 5.0s)
-is strictly checked before each line.
+Python cannot interrupt a single in-flight `re` match, so the protection that actually counts
+happens *before* the search starts: a pattern with a quantifier nested inside another quantifier
+(`(a+)+`), or an unbounded repetition of a group whose alternatives can match the same text
+(`(a|aa)+`, `(foo|foobar)*`, a branch that can match nothing), is rejected at validation time.
+So is any repeated branch the analyser cannot classify — an open-ended class such as `\d` or `.`
+next to a literal — because a false "yes" means a wedged proxy. Rewrite those as a character
+class (`^([\w.-])+$`) or make the alternatives disjoint. As a second layer, lines are capped at
+4,000 characters and the wall-clock deadline (`budget_seconds`, default 5.0s) is checked before
+each line.
 
 ## CLI
 
@@ -228,8 +234,11 @@ clean it up. Nothing is ever sent over the network by this tool.
   `os.chmod` does not alter NTFS ACLs; spill files inherit the access control of their parent
   directory. Set explicit directory ACLs (e.g. using `icacls`) if multiple local users share
   the host.
-- JSON-RPC **batches** are guarded only for the requests the proxy sees individually; virtual
-  tools inside a batch are forwarded to the server rather than answered locally.
+- JSON-RPC **batches** are handled item by item: a virtual `output_guard_*` call inside a batch
+  is answered locally (in its own response array, matched by `id`) and only the remaining items
+  are forwarded, so a server never receives a tool it does not implement. Results of server calls
+  inside a batch are guarded exactly like single calls. A batch that is partly answered locally
+  is re-serialized, so the byte-for-byte guarantee covers single messages and untouched batches.
 - Deeply nested `structuredContent` is pruned one list at a time, largest first; when the server
   advertises an `outputSchema`, `minItems` is honoured and length-pinned lists (`prefixItems`,
   `contains`) are left untrimmed. It is not a query engine for arbitrary schemas.
@@ -249,7 +258,9 @@ works on both Linux and Windows; `PYTHON=...` forces one, `CHECK_BOOTSTRAP=0` di
 `bash examples/demo.sh` replays the walkthrough above against the bundled fake server and prints
 the spill path, a paged read and a grep.
 
-Current state: 202 tests, ~93% line+branch coverage, Linux and Windows CI (reproducible with `requirements-dev.lock`).
+Current state: 222 tests, ~92% line+branch coverage, Linux and Windows CI. CI installs `requirements-dev.lock`
+(`pip install -r requirements-dev.lock`, then `pip install -e . --no-deps`), so a green run is a run of
+the pinned toolchain, not of whatever `pip` resolved that morning.
 
 ## License
 
