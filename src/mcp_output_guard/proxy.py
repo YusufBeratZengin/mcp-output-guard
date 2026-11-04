@@ -191,18 +191,54 @@ class Proxy:
 
         return raw
 
-    def _handle_client_batch(self, message: list[Any], raw: bytes) -> bytes:
-        # Batches are rare in MCP; pass them through, tracking call ids so the
-        # response array still gets guarded.
+    def _handle_client_batch(self, message: list[Any], raw: bytes) -> bytes | None:
+        """Split a batch: virtual calls are answered here, everything else goes on.
+
+        Batches are rare in MCP, but they are not exotic enough to break a
+        promised tool: an agent that batches ``output_guard_read`` with a server
+        call must still get an answer, and the server must never see a tool it
+        does not implement. The local answers are written immediately as their
+        own JSON-RPC response array (responses are matched by id, not by order);
+        the remaining items are forwarded as a batch, byte for byte when nothing
+        was answered here.
+        """
+        forwarded: list[Any] = []
+        answers: list[dict[str, Any]] = []
         for item in message:
-            if isinstance(item, dict) and item.get("method") in {"tools/call", "tools/list"}:
-                params = item.get("params")
-                params_dict = params if isinstance(params, dict) else {}
-                self._track(
-                    item.get("id"),
-                    PendingCall(str(item.get("method")), _as_str(params_dict.get("name")), params_dict),
-                )
-        return raw
+            if not isinstance(item, dict):
+                forwarded.append(item)
+                continue
+            method = item.get("method")
+            params = item.get("params")
+            params_dict: dict[str, Any] = params if isinstance(params, dict) else {}
+            if method == "tools/call":
+                name = params_dict.get("name")
+                if self.virtual_tools and "id" in item and virtual.is_virtual_tool(name):
+                    self.stats.calls_seen += 1
+                    result = virtual.call_virtual_tool(
+                        str(name), params_dict.get("arguments"), self.store
+                    )
+                    answers.append(
+                        {"jsonrpc": _JSONRPC_VERSION, "id": item["id"], "result": result}
+                    )
+                    continue
+                self.stats.calls_seen += 1
+                self._track(item.get("id"), PendingCall("tools/call", _as_str(name), params_dict))
+                forwarded.append(item)
+                continue
+            if method == "tools/list":
+                self._track(item.get("id"), PendingCall("tools/list", None, params_dict))
+                forwarded.append(item)
+                continue
+            forwarded.append(item)
+
+        if answers:
+            self._write_client(framing.encode_message(answers))
+        if len(forwarded) == len(message):
+            return raw
+        if not forwarded:
+            return None
+        return framing.encode_message(forwarded)
 
     def _track(self, request_id: Any, pending: PendingCall) -> None:
         if request_id is None:

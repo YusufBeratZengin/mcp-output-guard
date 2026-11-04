@@ -333,6 +333,44 @@ def test_untouched_batch_is_forwarded_byte_for_byte(tmp_path: Path) -> None:
     assert proxy.handle_server_message(responses) is responses
 
 
+def test_virtual_tool_inside_a_batch_is_answered_locally(tmp_path: Path) -> None:
+    proxy, out = make_proxy(tmp_path)
+    batch = [
+        {
+            "jsonrpc": "2.0",
+            "id": 40,
+            "method": "tools/call",
+            "params": {"name": "output_guard_spills", "arguments": {}},
+        },
+        {"jsonrpc": "2.0", "id": 41, "method": "tools/call", "params": {"name": "big"}},
+    ]
+    forwarded = proxy.handle_client_message(framing.encode_message(batch))
+    assert forwarded is not None
+    # The server only ever sees the call it actually implements.
+    assert [item["id"] for item in json.loads(forwarded)] == [41]
+
+    answered = json.loads(out.getvalue().decode("utf-8").strip())
+    assert isinstance(answered, list)
+    assert answered[0]["id"] == 40
+    assert answered[0]["result"]["structuredContent"]["spills"] == []
+    assert proxy.stats.calls_seen == 2
+
+
+def test_batch_of_only_virtual_tools_never_reaches_the_server(tmp_path: Path) -> None:
+    proxy, out = make_proxy(tmp_path)
+    batch = [
+        {
+            "jsonrpc": "2.0",
+            "id": "a",
+            "method": "tools/call",
+            "params": {"name": "output_guard_spills", "arguments": {"limit": 5}},
+        }
+    ]
+    assert proxy.handle_client_message(framing.encode_message(batch)) is None
+    answered = json.loads(out.getvalue().decode("utf-8").strip())
+    assert [item["id"] for item in answered] == ["a"]
+
+
 def test_resolve_command_on_posix() -> None:
     assert resolve_command(["python", "-V"], platform_name="posix") == ["python", "-V"]
 
