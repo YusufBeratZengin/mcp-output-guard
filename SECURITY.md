@@ -29,8 +29,8 @@ expect an initial reply within seven days. This is a volunteer project; there is
 
 - **Spill files contain whatever the server returned.** Tool output routinely includes
   environment variables, database rows, tokens echoed into logs or customer records. Files are
-  created with mode `0600` inside a `0700` directory, but the contents are not encrypted and not
-  redacted. Treat the spill directory as sensitive, point `--spill-dir` at a location with the
+  created with mode `0600` inside a `0700` directory the guard created; an existing
+  `--spill-dir` keeps its own permissions. The contents are not encrypted and not redacted. Treat the spill directory as sensitive, point `--spill-dir` at a location with the
   right retention policy, and run `mcp-output-guard spills clean` on a schedule.
 - **Spill references are contained.** `output_guard_read`, `output_guard_grep` and
   `output_guard_sql` resolve a path, then require it to stay inside the spill directory; `..`,

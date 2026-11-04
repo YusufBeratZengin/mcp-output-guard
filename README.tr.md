@@ -131,7 +131,7 @@ Windows'ta `npx.cmd` gibi sarmalayıcılar otomatik çözülür; aynı satır or
 | JSON-RPC hata yanıtı | Hiç dokunulmaz |
 | Birden çok `content` bloğu | Bütçe sırayla paylaşılır, artan bloklar notta sayılır |
 | Çok baytlı metin | Karakter sınırında kesilir; kod noktası veya surrogate çifti bölünmez |
-| `structuredContent` sınırın üstünde | İlk K kayıt kalır (bilinen `outputSchema` kurallarına uyar: `minItems`, `prefixItems`/`contains`); sayılar `_meta`'da |
+| `structuredContent` sınırın üstünde | Listeler en büyükten budanır, ilk K kayıt kalır (`minItems` korunur); şema uzunluğu sabitliyorsa (`prefixItems`/`contains`) ya da budanacak liste yoksa alan **yanıttan çıkarılır**, tam sonuç notta adı geçen JSON spill dosyasındadır |
 | Base64 görsel/ses büyük | Çözülür, gerçek dosyaya yazılır, yerine yol + boyut konur |
 | Bozuk base64 | Olduğu gibi bırakılır, `_meta.output_guard.binary` içinde işaretlenir |
 | Spill klasörü başlangıçta yazılamıyor | Sunucu komutunu çalıştırmadan önce **yüksek sesle hata verir** (çıkış kodu 2) |
@@ -209,10 +209,12 @@ orijinal baytları bu sayede olduğu gibi iletebiliyor.
 Araç çıktısı sık sık sır içerir: ortam değişkeni dökümleri, müşteri satırları, loglara düşmüş
 token'lar. Guard şunları yapar:
 
-- spill klasörünü POSIX sistemlerde `0700`, dosyaları `0600` izniyle oluşturur (Windows'ta
-  `os.chmod` NTFS ACL'lerini değiştirmez ve yalnızca salt okunur bayrağını etkiler; dosyalar üst
-  klasörün erişim politikasını devralır, bu nedenle Windows'ta klasör ACL'lerini ayrıca ayarlayın
-  veya `--spill-dir` ile önceden kısıtlanmış bir konum gösterin);
+- kendi oluşturduğu spill klasörünü POSIX sistemlerde `0700`, dosyaları `0600` izniyle açar
+  (Windows'ta `os.chmod` NTFS ACL'lerini değiştirmez ve yalnızca salt okunur bayrağını etkiler;
+  dosyalar üst klasörün erişim politikasını devralır, bu nedenle Windows'ta klasör ACL'lerini
+  ayrıca ayarlayın veya `--spill-dir` ile önceden kısıtlanmış bir konum gösterin);
+- var olan `--spill-dir` klasörünü kullanıcının bıraktığı gibi bırakır: izinlerini değiştirmez,
+  yalnızca içine yazdığı dosyaları `0600` yapar;
 - dosyaları içeriğin SHA-256'sıyla adlandırır (aynı yük tekrar yazılmaz);
 - spill klasörünün dışına çıkan yolları, sembolik bağlantı üzerinden bile, okumayı reddeder;
 - `mcp-output-guard spills clean --ttl-seconds 3600` ile eski dosyaları siler.
@@ -237,7 +239,10 @@ araç hiçbir şeyi ağa göndermez.
   hiç dokunulmayan batch'ler için geçerlidir.
 - İç içe `structuredContent` en büyük listeden başlanarak budanır; sunucu `outputSchema`
   bildiriyorsa `minItems` korunur, uzunluğu sabitlenmiş listeler (`prefixItems`, `contains`)
-  budanmaz. Keyfi şemalar için sorgu motoru değildir.
+  budanmaz. Keyfi şemalar için sorgu motoru değildir. Hiçbir liste budanamıyorsa guard yükü
+  sınırın üstünde iletmez: `structuredContent` yanıttan çıkarılır,
+  `_meta.output_guard.structured_content` `spilled` olur ve not tüm sonucun kayıpsız JSON
+  spill dosyasını gösterir.
 - Proxy tek süreç, tek bağlantı çalışır; çoklama yapmaz.
 
 ## Geliştirme

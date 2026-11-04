@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Oversized `structuredContent` that could not be pruned (a length-pinned list such as
+  `prefixItems`/`contains`, or no list at all) was forwarded untouched, over `--max-chars`, next
+  to a note that named no file. Such a payload is now dropped from the reply, the complete
+  result is written to the lossless JSON spill, and the note plus
+  `_meta.output_guard.structured_content = "spilled"` name it. A schema-pinned list is never
+  sliced, so the lossless copy is the only place its tail lives.
 - Spill store writability probe at startup: `store.ensure()` actively checks that files can be
   created, failing immediately at startup (`exit code 2`) if unwritable; aligned `SECURITY.md`
   and documentation between startup validation and runtime fail-open.
@@ -25,6 +31,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `SpillStore.ensure()` no longer chmods an existing `--spill-dir`; only a directory the guard
+  creates is tightened to `0700`. A prepared directory keeps the permissions and ACL policy the
+  user gave it.
 - Memory streaming: `read` and `grep` now stream payloads in chunks/lines without buffering
   entire multi-megabyte spill files in RAM.
 - Memory safety limits: enforced 50 MB maximum file size on `read`, `grep`, and in-memory `sql`,

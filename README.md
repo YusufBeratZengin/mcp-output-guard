@@ -134,7 +134,7 @@ On Windows the proxy resolves `npx.cmd` shims automatically, so the same line wo
 | JSON-RPC error response | Never touched |
 | Several `content` blocks | The budget is shared in order; leftover blocks are counted in the note |
 | Multi-byte text | Cut on a character boundary, never mid code point or mid surrogate pair |
-| `structuredContent` over the limit | First K records kept (honours known `outputSchema` constraints: `minItems`, `prefixItems`/`contains`), counts reported in `_meta` |
+| `structuredContent` over the limit | Lists trimmed largest-first, first K records kept (`minItems` honoured); when the schema pins the length (`prefixItems`/`contains`) or there is no list to trim, the field is **removed from the reply** and the complete result is in the JSON spill named by the note |
 | Base64 image/audio over `--image-max-chars` | Decoded, written to a real file, replaced by a pointer + size |
 | Broken base64 | Left exactly as it came, flagged in `_meta.output_guard.binary` |
 | Spill directory unwritable at startup | **Fails loudly** with exit code 2 before running the server command |
@@ -213,10 +213,12 @@ proxy decides to forward the original bytes.
 Tool output routinely contains secrets: environment dumps, customer rows, tokens echoed in
 logs. The guard:
 
-- creates the spill directory with mode `0700` and files with `0600` on POSIX systems (on
+- creates a spill directory it owns with mode `0700` and files with `0600` on POSIX systems (on
   Windows, `os.chmod` cannot alter NTFS ACLs and only toggles the read-only attribute; spill
   files inherit the directory's access control, so configure directory ACLs or point
   `--spill-dir` at an already-restricted location);
+- leaves an existing `--spill-dir` exactly as the user prepared it: its permissions are not
+  changed, only files written into it are tightened to `0600`;
 - names files after the SHA-256 of their content (identical payloads deduplicate);
 - refuses to read any path that resolves outside the spill directory, including via symlinks;
 - can prune old files with `mcp-output-guard spills clean --ttl-seconds 3600`.
@@ -241,7 +243,10 @@ clean it up. Nothing is ever sent over the network by this tool.
   is re-serialized, so the byte-for-byte guarantee covers single messages and untouched batches.
 - Deeply nested `structuredContent` is pruned one list at a time, largest first; when the server
   advertises an `outputSchema`, `minItems` is honoured and length-pinned lists (`prefixItems`,
-  `contains`) are left untrimmed. It is not a query engine for arbitrary schemas.
+  `contains`) are left untrimmed. It is not a query engine for arbitrary schemas. When no list
+  can be trimmed, the guard does not forward the payload oversized: it drops
+  `structuredContent` from the reply, marks `_meta.output_guard.structured_content` as
+  `spilled`, and the note points at the lossless JSON spill of the whole result.
 - The proxy is single-process, single-connection, and does not multiplex.
 
 ## Development
