@@ -37,6 +37,10 @@ __all__ = [
     "DEFAULT_GREP_BUDGET_SECONDS",
     "DEFAULT_GREP_SCAN_CHARS",
     "DEFAULT_TTL_SECONDS",
+    "MAX_GREP_FILE_BYTES",
+    "MAX_GREP_LINE_CHARS",
+    "MAX_PATTERN_CHARS",
+    "MAX_READ_FILE_BYTES",
     "SpillError",
     "SpillRecord",
     "SpillStore",
@@ -54,8 +58,10 @@ DEFAULT_GREP_BUDGET_SECONDS = 5.0
 #: Characters scanned by one ``grep`` call, and the longest single line that is
 #: matched against the expression (very long lines are the usual ReDoS fuel).
 DEFAULT_GREP_SCAN_CHARS = 8_000_000
-MAX_GREP_LINE_CHARS = 20_000
+MAX_GREP_LINE_CHARS = 4_000
 MAX_PATTERN_CHARS = 500
+MAX_READ_FILE_BYTES = 50 * 1024 * 1024
+MAX_GREP_FILE_BYTES = 50 * 1024 * 1024
 
 _ID_RE = re.compile(r"^[0-9a-f]{8,64}$")
 _META_SUFFIX = ".meta.json"
@@ -106,6 +112,54 @@ def _atomic_write(path: Path, data: bytes, mode: int = DEFAULT_FILE_MODE) -> Non
         os.chmod(path, mode)
 
 
+def _get_sre_parse() -> Any:
+    for mod_name in ("re._parser", "sre_parse"):
+        try:
+            return __import__(
+                mod_name,
+                fromlist=["parse", "MAX_REPEAT", "MIN_REPEAT", "SUBPATTERN", "BRANCH"],
+            )
+        except ImportError:
+            continue
+    return None
+
+
+def _has_nested_repeat(node: Any, parser: Any, in_repeat: bool = False) -> bool:
+    for item in node:
+        if not isinstance(item, tuple) or len(item) != 2:
+            continue
+        op, av = item
+        if op in (parser.MAX_REPEAT, parser.MIN_REPEAT):
+            if in_repeat:
+                return True
+            if isinstance(av, tuple) and len(av) >= 3 and _has_nested_repeat(av[2], parser, in_repeat=True):
+                return True
+        elif op == parser.SUBPATTERN:
+            sub = av[3] if len(av) == 4 else av[1]
+            if _has_nested_repeat(sub, parser, in_repeat=in_repeat):
+                return True
+        elif op == parser.BRANCH:
+            for branch in av[1]:
+                if _has_nested_repeat(branch, parser, in_repeat=in_repeat):
+                    return True
+    return False
+
+
+def _check_nested_quantifiers(pattern: str, flags: int = 0) -> bool:
+    """Detect catastrophic backtracking patterns (nested repetitions)."""
+    parser = _get_sre_parse()
+    if parser is not None:
+        try:
+            parsed = parser.parse(pattern, flags)
+            if _has_nested_repeat(parsed, parser):
+                return True
+        except Exception:
+            pass
+    return bool(
+        re.search(r"\((?:[^\(\)]*[\+\*\{]|\S+?[\+\*\{]).*?\)\s*(?:[\+\*]|\{\d+,\d*\})", pattern)
+    )
+
+
 class SpillStore:
     """A directory of spilled payloads plus their metadata sidecars."""
 
@@ -129,6 +183,17 @@ class SpillStore:
             ) from exc
         with contextlib.suppress(OSError):  # pragma: no cover - some network shares
             os.chmod(self.directory, DEFAULT_DIR_MODE)
+
+        # Proactively probe writability so unwritable directories fail loudly at startup.
+        probe = self.directory / f".probe_{os.getpid()}_{time.time_ns()}.tmp"
+        try:
+            probe.write_bytes(b"")
+            probe.unlink(missing_ok=True)
+        except OSError as exc:
+            raise SpillError(
+                f"spill directory {self.directory} is not writable: {exc}. "
+                "Pass --spill-dir with a writable location."
+            ) from exc
         return self.directory
 
     # -- writing -------------------------------------------------------
@@ -236,20 +301,52 @@ class SpillStore:
         if limit <= 0:
             raise SpillError("limit must be positive")
         path = self.resolve(ref)
-        text = path.read_text(encoding="utf-8", errors="replace")
-        total = len(text)
-        start = max(0, min(int(offset), total))
-        end = min(total, start + int(limit))
-        return {
-            "spill_id": path.stem,
-            "path": str(path),
-            "offset": start,
-            "limit": limit,
-            "total_chars": total,
-            "returned_chars": end - start,
-            "eof": end >= total,
-            "text": text[start:end],
-        }
+        size = path.stat().st_size
+        if size > MAX_READ_FILE_BYTES:
+            raise SpillError(
+                f"spill file is too large to read ({size / (1024 * 1024):.1f} MB "
+                f"exceeds {MAX_READ_FILE_BYTES // (1024 * 1024)} MB limit)"
+            )
+        start = max(0, int(offset))
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            skipped = 0
+            while skipped < start:
+                chunk = handle.read(min(65536, start - skipped))
+                if not chunk:
+                    break
+                skipped += len(chunk)
+            if skipped < start:
+                return {
+                    "spill_id": path.stem,
+                    "path": str(path),
+                    "offset": skipped,
+                    "limit": limit,
+                    "total_chars": skipped,
+                    "returned_chars": 0,
+                    "eof": True,
+                    "text": "",
+                }
+            window = handle.read(limit)
+            returned = len(window)
+            remainder = 0
+            while True:
+                chunk = handle.read(65536)
+                if not chunk:
+                    break
+                remainder += len(chunk)
+
+            total = skipped + returned + remainder
+            end = skipped + returned
+            return {
+                "spill_id": path.stem,
+                "path": str(path),
+                "offset": skipped,
+                "limit": limit,
+                "total_chars": total,
+                "returned_chars": returned,
+                "eof": end >= total,
+                "text": window,
+            }
 
     def grep(
         self,
@@ -263,44 +360,62 @@ class SpillStore:
     ) -> dict[str, Any]:
         """Regex-search a spill file line by line, under a wall-clock budget.
 
-        Python cannot interrupt a single catastrophic ``re`` match, so the
-        budget is enforced between lines and the input is bounded (at most
-        ``max_scan_chars`` characters, at most :data:`MAX_GREP_LINE_CHARS` per
-        line, at most :data:`MAX_PATTERN_CHARS` in the pattern). A search that
-        runs out of budget fails with :class:`SpillError` instead of holding the
-        proxy's input thread hostage.
+        Python cannot interrupt a single in-flight C-level ``re`` match, so the
+        search enforces defense-in-depth:
+        1. Patterns containing nested repetitions (catastrophic backtracking /
+           ReDoS risk) are rejected before execution.
+        2. Files are streamed line-by-line rather than loaded in whole.
+        3. Lines are capped at :data:`MAX_GREP_LINE_CHARS` characters.
+        4. Wall-clock budget is strictly checked before processing every line.
+        5. Total scanned characters are capped at ``max_scan_chars``.
         """
         if max_matches <= 0:
             raise SpillError("max_matches must be positive")
         if len(pattern) > MAX_PATTERN_CHARS:
             raise SpillError(f"regular expression is longer than {MAX_PATTERN_CHARS} characters")
         flags = re.IGNORECASE if ignore_case else 0
+        if _check_nested_quantifiers(pattern, flags):
+            raise SpillError(
+                "regular expression contains nested repetitions that risk catastrophic backtracking; "
+                "rewrite pattern without nested repetitions"
+            )
         try:
             regex = re.compile(pattern, flags)
         except re.error as exc:
             raise SpillError(f"invalid regular expression: {exc}") from exc
         path = self.resolve(ref)
-        text = path.read_text(encoding="utf-8", errors="replace")
-        scan_truncated = len(text) > max_scan_chars
-        if scan_truncated:
-            text = text[:max_scan_chars]
+        size = path.stat().st_size
+        if size > MAX_GREP_FILE_BYTES:
+            raise SpillError(
+                f"spill file is too large to grep ({size / (1024 * 1024):.1f} MB "
+                f"exceeds {MAX_GREP_FILE_BYTES // (1024 * 1024)} MB limit)"
+            )
         deadline = time.monotonic() + max(0.0, float(budget_seconds))
         matches: list[dict[str, Any]] = []
         total = 0
         skipped_long_lines = 0
-        for number, line in enumerate(text.splitlines(), start=1):
-            if number % 256 == 0 and time.monotonic() > deadline:
-                raise SpillError(
-                    f"search exceeded its {budget_seconds:g}s budget after {number} lines; "
-                    "narrow the pattern or read a smaller window"
-                )
-            if len(line) > MAX_GREP_LINE_CHARS:
-                line = line[:MAX_GREP_LINE_CHARS]
-                skipped_long_lines += 1
-            if regex.search(line):
-                total += 1
-                if len(matches) < max_matches:
-                    matches.append({"line": number, "text": line[:400]})
+        scanned_chars = 0
+        scan_truncated = False
+
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            for number, raw_line in enumerate(handle, start=1):
+                if time.monotonic() > deadline:
+                    raise SpillError(
+                        f"search exceeded its {budget_seconds:g}s budget after {number} lines; "
+                        "narrow the pattern or read a smaller window"
+                    )
+                line = raw_line.rstrip("\r\n")
+                scanned_chars += len(raw_line)
+                if scanned_chars > max_scan_chars:
+                    scan_truncated = True
+                    break
+                if len(line) > MAX_GREP_LINE_CHARS:
+                    line = line[:MAX_GREP_LINE_CHARS]
+                    skipped_long_lines += 1
+                if regex.search(line):
+                    total += 1
+                    if len(matches) < max_matches:
+                        matches.append({"line": number, "text": line[:400]})
         payload: dict[str, Any] = {
             "spill_id": path.stem,
             "path": str(path),

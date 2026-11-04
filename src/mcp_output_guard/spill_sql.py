@@ -15,12 +15,14 @@ from typing import Any
 
 __all__ = [
     "MAX_LOADED_ROWS",
+    "MAX_SQL_FILE_BYTES",
     "SpillSQLError",
     "load_rows",
     "query_spill",
 ]
 
 MAX_LOADED_ROWS = 500_000
+MAX_SQL_FILE_BYTES = 50 * 1024 * 1024
 _ALLOWED_START = re.compile(r"^\s*(select|with|explain)\b", re.IGNORECASE)
 _COMMENT_OR_SPACE = re.compile(r"^(\s|--[^\n]*\n|/\*.*?\*/)+", re.DOTALL)
 
@@ -107,6 +109,7 @@ def _flatten(value: Any) -> Any:
 
 def _rows_from_csv(path: Path) -> tuple[list[str], list[list[Any]]]:
     delimiter = "\t" if path.suffix.lower() == ".tsv" else ","
+    rows: list[list[Any]] = []
     with path.open("r", encoding="utf-8", errors="replace", newline="") as handle:
         reader = csv.reader(handle, delimiter=delimiter)
         try:
@@ -114,12 +117,24 @@ def _rows_from_csv(path: Path) -> tuple[list[str], list[list[Any]]]:
         except StopIteration:
             return [], []
         columns = [str(name).strip() or f"c{index}" for index, name in enumerate(header)]
-        rows = list(reader)
+        for count, row in enumerate(reader, start=1):
+            if count > MAX_LOADED_ROWS:
+                raise SpillSQLError(
+                    f"CSV payload exceeds {MAX_LOADED_ROWS} rows limit for in-memory SQLite"
+                )
+            rows.append(row)
     return columns, rows
 
 
 def load_rows(path: Path) -> tuple[list[str], list[list[Any]]]:
     """Read a spill file and return ``(columns, rows)``."""
+    size = path.stat().st_size
+    if size > MAX_SQL_FILE_BYTES:
+        raise SpillSQLError(
+            f"spill file is too large for SQL loading ({size / (1024 * 1024):.1f} MB "
+            f"exceeds {MAX_SQL_FILE_BYTES // (1024 * 1024)} MB limit); "
+            "inspect with output_guard_read or output_guard_grep instead"
+        )
     suffix = path.suffix.lower()
     if suffix in {".csv", ".tsv"}:
         return _rows_from_csv(path)

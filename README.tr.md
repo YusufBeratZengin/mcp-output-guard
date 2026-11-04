@@ -134,7 +134,8 @@ Windows'ta `npx.cmd` gibi sarmalayıcılar otomatik çözülür; aynı satır or
 | `structuredContent` sınırın üstünde | İlk K kayıt kalır (bilinen `outputSchema` kurallarına uyar: `minItems`, `prefixItems`/`contains`); sayılar `_meta`'da |
 | Base64 görsel/ses büyük | Çözülür, gerçek dosyaya yazılır, yerine yol + boyut konur |
 | Bozuk base64 | Olduğu gibi bırakılır, `_meta.output_guard.binary` içinde işaretlenir |
-| Spill klasörü yazılamıyor / disk dolu | **Açık hata (fail open)**: sonuç korumasız iletilir, stderr'e uyarı yazılır ve çağrı `--stats`'ta sayılır |
+| Spill klasörü başlangıçta yazılamıyor | Sunucu komutunu çalıştırmadan önce **yüksek sesle hata verir** (çıkış kodu 2) |
+| Spill klasörü çalışma anında doldu / yazılamıyor | **Açık hata (fail open)**: sonuç korumasız iletilir, stderr'e uyarı yazılır ve çağrı `--stats`'ta sayılır |
 
 Bayt bayt garantisi önemli: istemci çıktıyı özetliyor veya karşılaştırıyorsa, guard gerçekten
 bir şey yapmadıkça hiçbir fark görmez.
@@ -152,7 +153,12 @@ Başarılı her `tools/list` yanıtına eklenir (`--no-virtual-tools` ile kapat�
 
 `output_guard_sql` veriyi bellekte `data` adlı SQLite tablosuna yükler. Sütun tipleri çıkarılır,
 böylece `WHERE id > 15` sayısal karşılaştırma olur; sorgudan önce bağlantı `query_only` moduna
-alınır, yani spill dosyası asla değiştirilemez.
+alınır, yani spill dosyası asla değiştirilemez. Yüklenen dosyalar 50 MB güvenlik tavanıyla denetlenir.
+
+`output_guard_grep` spill dosyalarını belleğe bütünüyle yüklemeden satır satır akışla (streaming) tarar.
+ReDoS ifadelerinin proxy'yi kilitlemesini engellemek için iç içe nicelikleyiciler statik olarak reddedilir,
+satır uzunlukları 4.000 karakterle sınırlandırılır ve her satır öncesinde duvar saati bütçesi (`budget_seconds`)
+denetlenir.
 
 ## Komut satırı
 
@@ -232,14 +238,14 @@ python -m pip install -e ".[dev]"
 bash scripts/check.sh        # ruff + mypy + pytest, --cov-fail-under=85
 ```
 
-`check.sh` geliştirme araçlarını içe aktarabilen bir yorumlayıcı arar; hiçbiri yoksa `.venv`
-oluşturup `.[dev]` kurar, yani hazırlanmamış bir ortamda da çalışır. `PYTHON=...` seçimi
-zorlar, `CHECK_BOOTSTRAP=0` kurulum adımını kapatır.
+`check.sh` geliştirme araçlarını içe aktarabilen bir yorumlayıcı arar; hiçbiri yoksa hem POSIX hem
+Windows düzenlerini destekleyerek `.venv` oluşturup `.[dev]` kurar, yani hazırlanmamış bir ortamda da
+çalışır. `PYTHON=...` seçimi zorlar, `CHECK_BOOTSTRAP=0` kurulum adımını kapatır.
 
 `bash examples/demo.sh` yukarıdaki akışı paketteki sahte sunucuyla yeniden oynatır; spill
 yolunu, sayfalı okumayı ve grep sonucunu basar.
 
-Güncel durum: 195 test, %93 satır+dallanma kapsamı, Linux ve Windows CI.
+Güncel durum: 202 test, %93 satır+dallanma kapsamı, Linux ve Windows CI (`requirements-dev.lock` ile tekrarlanabilir ortam).
 
 ## Lisans
 

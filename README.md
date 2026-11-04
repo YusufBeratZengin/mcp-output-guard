@@ -137,7 +137,8 @@ On Windows the proxy resolves `npx.cmd` shims automatically, so the same line wo
 | `structuredContent` over the limit | First K records kept (honours known `outputSchema` constraints: `minItems`, `prefixItems`/`contains`), counts reported in `_meta` |
 | Base64 image/audio over `--image-max-chars` | Decoded, written to a real file, replaced by a pointer + size |
 | Broken base64 | Left exactly as it came, flagged in `_meta.output_guard.binary` |
-| Spill directory unwritable or full | **Fails open**: the result is forwarded unguarded, a warning goes to stderr and the call is counted in `--stats` |
+| Spill directory unwritable at startup | **Fails loudly** with exit code 2 before running the server command |
+| Spill directory full or unwritable mid-session | **Fails open**: the result is forwarded unguarded, a warning goes to stderr and the call is counted in `--stats` |
 
 The byte-for-byte guarantee matters: a client that hashes or diffs tool output sees no change
 unless the guard actually did something.
@@ -155,7 +156,12 @@ Added to every successful `tools/list` (disable with `--no-virtual-tools`):
 
 `output_guard_sql` loads the payload into an in-memory SQLite table named `data`. Column types
 are inferred, so `WHERE id > 15` is numeric, and the connection is switched to `query_only`
-before the statement runs.
+before the statement runs. Payloads are checked against a 50 MB in-memory safety limit.
+
+`output_guard_grep` streams files line-by-line rather than reading entire payloads into memory.
+To prevent ReDoS from blocking the proxy, nested repetitions are rejected at validation time,
+lines are capped at 4,000 characters, and a wall-clock deadline (`budget_seconds`, default 5.0s)
+is strictly checked before each line.
 
 ## CLI
 
@@ -236,14 +242,14 @@ python -m pip install -e ".[dev]"
 bash scripts/check.sh        # ruff + mypy + pytest with --cov-fail-under=85
 ```
 
-`check.sh` finds an interpreter that has the dev tools (or provisions `.venv` and installs
-`.[dev]` into it), so running it without a prepared environment still works; `PYTHON=...`
-forces one, `CHECK_BOOTSTRAP=0` disables the install step.
+`check.sh` finds an interpreter that has the dev tools (or provisions `.venv` across POSIX or
+Windows layouts and installs `.[dev]` into it), so running it without a prepared environment
+works on both Linux and Windows; `PYTHON=...` forces one, `CHECK_BOOTSTRAP=0` disables the install step.
 
 `bash examples/demo.sh` replays the walkthrough above against the bundled fake server and prints
 the spill path, a paged read and a grep.
 
-Current state: 195 tests, 93% line+branch coverage, Linux and Windows CI.
+Current state: 202 tests, ~93% line+branch coverage, Linux and Windows CI (reproducible with `requirements-dev.lock`).
 
 ## License
 

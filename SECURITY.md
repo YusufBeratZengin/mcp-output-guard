@@ -41,11 +41,23 @@ expect an initial reply within seven days. This is a volunteer project; there is
 - **The proxy is not a sandbox.** It does not filter, validate or authorise the MCP server's
   behaviour; it only rewrites oversized results. Run untrusted MCP servers with the same care you
   would give any other local process.
-- **Availability beats secrecy on ambiguity.** If a result cannot be spilled (unwritable
-  directory), the command fails loudly at startup rather than silently passing oversized output
-  through.
+- **`output_guard_grep` defense against ReDoS and proxy lockup.** Python's standard `re` module
+  does not allow preempting a running C-level match. To safeguard the proxy process from denial of
+  service, `output_guard_grep` rejects nested repetitions statically, streams files line-by-line
+  without buffering whole files into memory, caps line length to 4,000 characters and file size to
+  50 MB, and enforces a strict per-line wall-clock deadline (`budget_seconds`).
+- **Availability and memory bounds for large spills.** `output_guard_read`, `output_guard_grep` and
+  `output_guard_sql` enforce a 50 MB maximum file size limit, and `output_guard_sql` caps CSV imports
+  at 500,000 rows, preventing unbounded memory consumption.
+- **Writability check at startup vs. runtime fail-open.** At startup, `mcp-output-guard` verifies
+  that the spill directory can be created and written to; if unwritable, it exits immediately with
+  an error (`exit code 2`). If a write fails dynamically during an active session (e.g. disk runs
+  out of space mid-run), availability takes priority over truncation: the oversized result is
+  forwarded unguarded, a warning is logged to stderr, and `--stats` records the failure, ensuring
+  the active client session is not aborted.
 
 ## Dependencies
 
 There are no runtime dependencies. The development dependencies (pytest, ruff, mypy) are used
-only in CI and are pinned by Dependabot.
+only for local development and CI; they are pinned in `requirements-dev.lock` for reproducible builds
+and kept up-to-date by Dependabot.

@@ -4,11 +4,18 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 from pathlib import Path
 
 import pytest
 
-from mcp_output_guard.spill_sql import SpillSQLError, load_rows, query_spill
+from mcp_output_guard.spill_sql import (
+    MAX_LOADED_ROWS,
+    MAX_SQL_FILE_BYTES,
+    SpillSQLError,
+    load_rows,
+    query_spill,
+)
 
 
 def _write_json(tmp_path: Path, value: object, name: str = "rows.json") -> Path:
@@ -150,3 +157,41 @@ def test_comment_before_select_is_allowed(tmp_path: Path) -> None:
     path = _write_json(tmp_path, [{"id": 1}])
     payload = query_spill(path, "-- a comment\nSELECT count(*) FROM data")
     assert payload["rows"] == [[1]]
+
+
+def test_sql_file_size_limit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    assert MAX_SQL_FILE_BYTES == 50 * 1024 * 1024
+    path = _write_json(tmp_path, [{"id": 1}])
+
+    real_stat = Path.stat
+
+    def fake_stat(self: Path) -> os.stat_result:
+        res = real_stat(self)
+        if self == path:
+            return os.stat_result((
+                res.st_mode,
+                res.st_ino,
+                res.st_dev,
+                res.st_nlink,
+                res.st_uid,
+                res.st_gid,
+                60 * 1024 * 1024,
+                res.st_atime,
+                res.st_mtime,
+                res.st_ctime,
+            ))
+        return res
+
+    monkeypatch.setattr(Path, "stat", fake_stat)
+    with pytest.raises(SpillSQLError, match="too large for SQL"):
+        load_rows(path)
+
+
+def test_csv_max_rows_limit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    assert MAX_LOADED_ROWS == 500_000
+    path = _write_csv(tmp_path, [["id"], ["1"], ["2"], ["3"]])
+    from mcp_output_guard import spill_sql
+
+    monkeypatch.setattr(spill_sql, "MAX_LOADED_ROWS", 2)
+    with pytest.raises(SpillSQLError, match="exceeds 2 rows limit"):
+        load_rows(path)

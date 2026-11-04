@@ -11,6 +11,8 @@ import pytest
 
 from mcp_output_guard.spill import (
     DEFAULT_TTL_SECONDS,
+    MAX_GREP_FILE_BYTES,
+    MAX_READ_FILE_BYTES,
     SpillError,
     SpillStore,
     default_dir,
@@ -100,6 +102,75 @@ def test_grep_invalid_regex(store: SpillStore) -> None:
         store.grep(record.spill_id, "([")
     with pytest.raises(SpillError):
         store.grep(record.spill_id, "a", max_matches=0)
+
+
+def test_grep_rejects_nested_quantifiers_redos(store: SpillStore) -> None:
+    record = store.put_text("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!")
+    with pytest.raises(SpillError, match="nested repetitions"):
+        store.grep(record.spill_id, "(a+)+")
+    with pytest.raises(SpillError, match="nested repetitions"):
+        store.grep(record.spill_id, "([0-9]+)+")
+    with pytest.raises(SpillError, match="nested repetitions"):
+        store.grep(record.spill_id, "(a*)*")
+    with pytest.raises(SpillError, match="nested repetitions"):
+        store.grep(record.spill_id, "(a|b+)+")
+    with pytest.raises(SpillError, match="nested repetitions"):
+        store.grep(record.spill_id, "((a+))+")
+
+
+def test_grep_checks_deadline_per_line(store: SpillStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    lines = "\n".join(f"line-{i} target" for i in range(10))
+    record = store.put_text(lines)
+    calls = 0
+    real_monotonic = time.monotonic
+
+    def fake_monotonic() -> float:
+        nonlocal calls
+        calls += 1
+        return real_monotonic() + (100.0 if calls > 2 else 0.0)
+
+    monkeypatch.setattr(time, "monotonic", fake_monotonic)
+    with pytest.raises(SpillError, match="budget"):
+        store.grep(record.spill_id, "target", budget_seconds=1.0)
+
+
+def test_read_and_grep_file_size_limits(store: SpillStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    assert MAX_READ_FILE_BYTES == 50 * 1024 * 1024
+    assert MAX_GREP_FILE_BYTES == 50 * 1024 * 1024
+    record = store.put_text("content")
+
+    real_stat = Path.stat
+
+    def fake_stat(self: Path) -> os.stat_result:
+        res = real_stat(self)
+        if self == record.path:
+            return os.stat_result((
+                res.st_mode,
+                res.st_ino,
+                res.st_dev,
+                res.st_nlink,
+                res.st_uid,
+                res.st_gid,
+                60 * 1024 * 1024,
+                res.st_atime,
+                res.st_mtime,
+                res.st_ctime,
+            ))
+        return res
+
+    monkeypatch.setattr(Path, "stat", fake_stat)
+    with pytest.raises(SpillError, match="too large to read"):
+        store.read(record.spill_id)
+    with pytest.raises(SpillError, match="too large to grep"):
+        store.grep(record.spill_id, "content")
+
+
+def test_read_past_eof(store: SpillStore) -> None:
+    record = store.put_text("short")
+    payload = store.read(record.spill_id, offset=100, limit=10)
+    assert payload["text"] == ""
+    assert payload["returned_chars"] == 0
+    assert payload["eof"] is True
 
 
 def test_resolve_rejects_traversal(store: SpillStore, tmp_path: Path) -> None:
@@ -219,7 +290,28 @@ def test_ensure_reports_unwritable_directory(tmp_path: Path) -> None:
     blocker = tmp_path / "file"
     blocker.write_text("x", encoding="utf-8")
     store = SpillStore(blocker / "sub")
-    with pytest.raises(SpillError, match="spill directory"):
+    with pytest.raises(SpillError, match="cannot create spill directory"):
+        store.ensure()
+
+
+def test_ensure_probes_writability_and_rejects_unwritable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = SpillStore(tmp_path / "probe_target")
+    # Verify normal ensure succeeds and probe is cleaned up
+    assert store.ensure().exists()
+    assert not any(p.name.startswith(".probe_") for p in store.directory.iterdir())
+
+    # Simulate directory where files cannot be written (PermissionError / OSError)
+    real_write = Path.write_bytes
+
+    def fake_write_bytes(self: Path, data: bytes) -> int:
+        if self.parent == store.directory and self.name.startswith(".probe_"):
+            raise PermissionError("Access denied: read-only directory")
+        return real_write(self, data)
+
+    monkeypatch.setattr(Path, "write_bytes", fake_write_bytes)
+    with pytest.raises(SpillError, match="is not writable"):
         store.ensure()
 
 

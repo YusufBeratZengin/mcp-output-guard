@@ -4,6 +4,27 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Spill store writability probe at startup: `store.ensure()` actively checks that files can be
+  created, failing immediately at startup (`exit code 2`) if unwritable; aligned `SECURITY.md`
+  and documentation between startup validation and runtime fail-open.
+- Windows virtualenv discovery in `scripts/check.sh`: added candidate scanning and bootstrap
+  support for `Scripts/python.exe`, enabling zero-setup developer gate execution on Windows.
+- Catastrophic backtracking defense in `output_guard_grep`: added static rejection of nested
+  quantifiers (ReDoS risk), per-line wall-clock deadline checks, and 4,000-character line bounds.
+
+### Changed
+
+- Memory streaming: `read` and `grep` now stream payloads in chunks/lines without buffering
+  entire multi-megabyte spill files in RAM.
+- Memory safety limits: enforced 50 MB maximum file size on `read`, `grep`, and in-memory `sql`,
+  with a 500,000-row limit on CSV SQLite imports.
+- Reproducible dependencies: added `requirements-dev.lock` with exact pinned versions of dev tools.
+- Test coverage expanded to 202 tests (~93% branch+line coverage).
+
 ## [0.1.0] - 2026-11-03
 
 First release.
