@@ -320,6 +320,17 @@ def test_cleanup_negative_ttl_is_noop(store: SpillStore) -> None:
     assert store.cleanup(ttl_seconds=-1) == 0
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory modes")
+def test_ensure_does_not_chmod_an_existing_directory(tmp_path: Path) -> None:
+    # --spill-dir may point at a directory the user prepared; adjusting its
+    # permissions behind their back is surprising and can widen or break ACLs.
+    existing = tmp_path / "prepared"
+    existing.mkdir()
+    os.chmod(existing, 0o755)
+    SpillStore(existing).ensure()
+    assert stat.S_IMODE(existing.stat().st_mode) == 0o755
+
+
 def test_ensure_reports_unwritable_directory(tmp_path: Path) -> None:
     blocker = tmp_path / "file"
     blocker.write_text("x", encoding="utf-8")

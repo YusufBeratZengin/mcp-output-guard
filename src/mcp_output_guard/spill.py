@@ -2,8 +2,10 @@
 
 Every spill is a file inside one directory, named after the SHA-256 of its
 contents, so identical payloads deduplicate naturally. Files are created with
-mode ``0600`` and the directory with ``0700`` because tool output routinely
-contains secrets (environment dumps, database rows, tokens in logs).
+mode ``0600`` because tool output routinely contains secrets (environment
+dumps, database rows, tokens in logs); a directory this store *creates* gets
+``0700``. A directory that already exists - typically one the user passed with
+``--spill-dir`` - is used as-is and its permissions are never changed.
 
 Those modes are POSIX permissions. On Windows ``os.chmod`` only toggles the
 read-only bit and does not change the ACL: a spill file there inherits the
@@ -127,7 +129,13 @@ class SpillStore:
 
     # -- lifecycle -----------------------------------------------------
     def ensure(self) -> Path:
-        """Create the spill directory if needed and return it."""
+        """Create the spill directory if needed and return it.
+
+        Only a directory this call creates is tightened to ``0700``. An existing
+        ``--spill-dir`` belongs to the user and keeps the permissions they gave
+        it; a chmod there could silently widen or break a prepared ACL policy.
+        """
+        existed = self.directory.is_dir()
         try:
             self.directory.mkdir(parents=True, exist_ok=True, mode=DEFAULT_DIR_MODE)
         except OSError as exc:
@@ -135,8 +143,9 @@ class SpillStore:
                 f"cannot create spill directory {self.directory}: {exc}. "
                 "Pass --spill-dir with a writable location."
             ) from exc
-        with contextlib.suppress(OSError):  # pragma: no cover - some network shares
-            os.chmod(self.directory, DEFAULT_DIR_MODE)
+        if not existed:
+            with contextlib.suppress(OSError):  # pragma: no cover - some network shares
+                os.chmod(self.directory, DEFAULT_DIR_MODE)
 
         # Proactively probe writability so unwritable directories fail loudly at startup.
         probe = self.directory / f".probe_{os.getpid()}_{time.time_ns()}.tmp"
