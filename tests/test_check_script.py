@@ -58,3 +58,20 @@ def test_bootstrap_can_be_disabled_without_network() -> None:
     # Explicit PYTHON keeps priority over the bootstrap switch: the message
     # still points at the interpreter the caller asked for.
     assert "/bin/false" in result.stderr
+
+
+def test_find_venv_python_resolves_windows_scripts(tmp_path: Path) -> None:
+    assert BASH is not None
+    venv_dir = tmp_path / "win_venv"
+    scripts_dir = venv_dir / "Scripts"
+    scripts_dir.mkdir(parents=True)
+    fake_exe = scripts_dir / "python.exe"
+    fake_exe.write_bytes(b"")
+
+    cmd = f'''
+    eval "$(sed -n '/find_venv_python()/,/^}}/p' "{SCRIPT.as_posix()}")"
+    find_venv_python "{venv_dir.as_posix()}"
+    '''
+    res = subprocess.run([BASH, "-c", cmd], capture_output=True, text=True, check=False)
+    assert res.returncode == 0
+    assert "Scripts/python.exe" in res.stdout.replace("\\", "/")

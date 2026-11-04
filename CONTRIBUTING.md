@@ -8,7 +8,7 @@ predictable, so a few rules carry more weight than usual.
 ```bash
 git clone https://github.com/YusufBeratZengin/mcp-output-guard
 cd mcp-output-guard
-python -m pip install -e ".[dev]"
+python -m pip install -e ".[dev]"  # or: python -m pip install -r requirements-dev.lock -e .
 bash scripts/check.sh
 ```
 
@@ -16,11 +16,11 @@ bash scripts/check.sh
 floor. A pull request that does not make it pass locally will not pass in CI either.
 
 The gate picks its own interpreter: an explicit `PYTHON=/path/to/python` wins, otherwise it
-scans `PATH`, project virtualenvs and the usual install prefixes for a Python that can import
-ruff, mypy, pytest and pytest-cov. If none exists it creates a project-local `.venv` and
-installs `.[dev]` there, so `bash scripts/check.sh` works from a bare checkout. Set
-`CHECK_BOOTSTRAP=0` to forbid that network step (the script then exits 1 with the exact
-`pip install` command to run).
+scans `PATH`, project virtualenvs (`.venv` or `venv` across POSIX `bin/` and Windows `Scripts/` layouts)
+and the usual install prefixes for a Python that can import ruff, mypy, pytest and pytest-cov. If
+none exists it creates a project-local `.venv` and installs `.[dev]` there, so `bash scripts/check.sh`
+works from a bare checkout on both Linux and Windows. Set `CHECK_BOOTSTRAP=0` to forbid that network
+step (the script then exits 1 with the exact `pip install` command to run).
 
 ## What a good change looks like
 

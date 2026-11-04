@@ -44,6 +44,19 @@ add_candidate() {
   candidates+=("$path")
 }
 
+find_venv_python() {
+  local dir="$1"
+  if [ -f "$dir/bin/python" ]; then
+    echo "$dir/bin/python"
+  elif [ -f "$dir/Scripts/python.exe" ]; then
+    echo "$dir/Scripts/python.exe"
+  elif [ -f "$dir/Scripts/python" ]; then
+    echo "$dir/Scripts/python"
+  elif [ -f "$dir/bin/python3" ]; then
+    echo "$dir/bin/python3"
+  fi
+}
+
 if [ -n "${PYTHON:-}" ]; then
   add_candidate "$PYTHON"
   explicit_python=1
@@ -52,8 +65,12 @@ else
   for name in python3 python python3.14 python3.13 python3.12 python3.11 python3.10; do
     add_candidate "$name"
   done
-  add_candidate .venv/bin/python
-  add_candidate venv/bin/python
+  for v in .venv venv; do
+    add_candidate "$v/bin/python"
+    add_candidate "$v/bin/python3"
+    add_candidate "$v/Scripts/python.exe"
+    add_candidate "$v/Scripts/python"
+  done
   add_candidate "$HOME/.local/bin/python3"
   for pattern in \
     "$HOME/.local/share/uv/python"/*/bin/python3 \
@@ -113,18 +130,25 @@ if [ -z "$PYTHON" ]; then
   printf 'No interpreter with the dev tools; bootstrapping .venv with %s (%s)\n' \
     "$base" "$("$base" --version 2>&1)" >&2
 
-  if [ ! -x .venv/bin/python ]; then
+  venv_py="$(find_venv_python .venv)"
+  if [ -z "$venv_py" ] || [ ! -f "$venv_py" ]; then
     if ! "$base" -m venv .venv >&2; then
       printf 'FAILED: could not create .venv with %s\n' "$base" >&2
       printf 'Install the dev extras:  %s -m pip install -e ".[dev]"\n' "$base" >&2
       exit 1
     fi
+    venv_py="$(find_venv_python .venv)"
+  fi
+
+  if [ -z "$venv_py" ] || [ ! -f "$venv_py" ]; then
+    printf 'FAILED: virtualenv was created but no Python binary found in .venv/bin or .venv/Scripts\n' >&2
+    exit 1
   fi
 
   if command -v uv >/dev/null 2>&1; then
-    install_cmd=(uv pip install --python .venv/bin/python -e ".[dev]")
+    install_cmd=(uv pip install --python "$venv_py" -e ".[dev]")
   else
-    install_cmd=(.venv/bin/python -m pip install --disable-pip-version-check -q -e ".[dev]")
+    install_cmd=("$venv_py" -m pip install --disable-pip-version-check -q -e ".[dev]")
   fi
 
   if ! "${install_cmd[@]}" >&2; then
@@ -133,11 +157,11 @@ if [ -z "$PYTHON" ]; then
     exit 1
   fi
 
-  if ! has_dev_tools .venv/bin/python; then
-    printf 'FAILED: .venv/bin/python still cannot import the dev tools.\n' >&2
+  if ! has_dev_tools "$venv_py"; then
+    printf 'FAILED: %s still cannot import the dev tools.\n' "$venv_py" >&2
     exit 1
   fi
-  PYTHON=.venv/bin/python
+  PYTHON="$venv_py"
 fi
 
 export PYTHONPATH="src${PYTHONPATH:+:$PYTHONPATH}"
