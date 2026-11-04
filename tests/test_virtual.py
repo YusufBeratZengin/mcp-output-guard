@@ -108,6 +108,19 @@ def test_grep_invalid_pattern(store: SpillStore) -> None:
     assert result["isError"] is True
 
 
+def test_grep_rejection_is_reported_to_the_model(store: SpillStore) -> None:
+    # The model has to learn *why* a pattern was refused, otherwise it retries
+    # the same expression with a different spill.
+    record = store.put_text("a" * 500 + "!")
+    result = virtual.call_virtual_tool(
+        virtual.GREP_TOOL, {"spill": record.spill_id, "pattern": "(a|aa)+$"}, store
+    )
+    assert result["isError"] is True
+    message = result["content"][0]["text"]
+    assert "alternatives" in message
+    assert "character class" in message
+
+
 def test_sql_tool(store: SpillStore) -> None:
     record = store.put_json([{"id": i, "name": f"n{i}"} for i in range(50)])
     result = virtual.call_virtual_tool(

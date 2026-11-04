@@ -118,6 +118,40 @@ def test_grep_rejects_nested_quantifiers_redos(store: SpillStore) -> None:
         store.grep(record.spill_id, "((a+))+")
 
 
+def test_grep_rejects_ambiguous_alternation_redos(store: SpillStore) -> None:
+    # Nested repetitions are not the only exponential shape: a repeated group
+    # whose alternatives start with the same character backtracks just as badly,
+    # and the per-line deadline can never interrupt one in-flight ``re`` match.
+    record = store.put_text("a" * 400 + "!")
+    ambiguous = (
+        "(a|aa)+$",          # one alternative is a prefix of the other
+        "(foo|foobar)+$",    # same, spelled out
+        "(a|)+$",            # one branch can match nothing
+        "(a|ab|b)+$",        # two alternatives share their first character
+        r"(\d|ab)+$",        # open-ended character set next to a literal
+    )
+    for pattern in ambiguous:
+        with pytest.raises(SpillError, match="alternatives"):
+            store.grep(record.spill_id, pattern)
+
+
+def test_grep_rejects_ambiguous_alternation_with_ignore_case(store: SpillStore) -> None:
+    record = store.put_text("a" * 400 + "!")
+    with pytest.raises(SpillError, match="alternatives"):
+        store.grep(record.spill_id, "(abc|ABD)+$", ignore_case=True)
+
+
+def test_grep_keeps_working_for_safe_alternations_and_classes(store: SpillStore) -> None:
+    record = store.put_text("alpha\nbeta\n")
+    payload = store.grep(record.spill_id, "(alpha|beta)+")
+    assert payload["total_matches"] == 2
+    # The recommended rewrite for an ambiguous branch: one character class.
+    payload = store.grep(record.spill_id, r"^([\w.-])+$")
+    assert payload["total_matches"] == 2
+    # Bounded repetition cannot blow up, so an ambiguous group stays allowed.
+    assert store.grep(record.spill_id, "(a|aa){1,3}")["total_matches"] == 2
+
+
 def test_grep_checks_deadline_per_line(store: SpillStore, monkeypatch: pytest.MonkeyPatch) -> None:
     lines = "\n".join(f"line-{i} target" for i in range(10))
     record = store.put_text(lines)

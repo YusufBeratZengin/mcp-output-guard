@@ -31,6 +31,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .regex_safety import pattern_risk
+
 __all__ = [
     "DEFAULT_DIR_MODE",
     "DEFAULT_FILE_MODE",
@@ -110,54 +112,6 @@ def _atomic_write(path: Path, data: bytes, mode: int = DEFAULT_FILE_MODE) -> Non
         raise
     with contextlib.suppress(OSError):  # pragma: no cover - exotic filesystems
         os.chmod(path, mode)
-
-
-def _get_sre_parse() -> Any:
-    for mod_name in ("re._parser", "sre_parse"):
-        try:
-            return __import__(
-                mod_name,
-                fromlist=["parse", "MAX_REPEAT", "MIN_REPEAT", "SUBPATTERN", "BRANCH"],
-            )
-        except ImportError:
-            continue
-    return None
-
-
-def _has_nested_repeat(node: Any, parser: Any, in_repeat: bool = False) -> bool:
-    for item in node:
-        if not isinstance(item, tuple) or len(item) != 2:
-            continue
-        op, av = item
-        if op in (parser.MAX_REPEAT, parser.MIN_REPEAT):
-            if in_repeat:
-                return True
-            if isinstance(av, tuple) and len(av) >= 3 and _has_nested_repeat(av[2], parser, in_repeat=True):
-                return True
-        elif op == parser.SUBPATTERN:
-            sub = av[3] if len(av) == 4 else av[1]
-            if _has_nested_repeat(sub, parser, in_repeat=in_repeat):
-                return True
-        elif op == parser.BRANCH:
-            for branch in av[1]:
-                if _has_nested_repeat(branch, parser, in_repeat=in_repeat):
-                    return True
-    return False
-
-
-def _check_nested_quantifiers(pattern: str, flags: int = 0) -> bool:
-    """Detect catastrophic backtracking patterns (nested repetitions)."""
-    parser = _get_sre_parse()
-    if parser is not None:
-        try:
-            parsed = parser.parse(pattern, flags)
-            if _has_nested_repeat(parsed, parser):
-                return True
-        except Exception:
-            pass
-    return bool(
-        re.search(r"\((?:[^\(\)]*[\+\*\{]|\S+?[\+\*\{]).*?\)\s*(?:[\+\*]|\{\d+,\d*\})", pattern)
-    )
 
 
 class SpillStore:
@@ -362,8 +316,10 @@ class SpillStore:
 
         Python cannot interrupt a single in-flight C-level ``re`` match, so the
         search enforces defense-in-depth:
-        1. Patterns containing nested repetitions (catastrophic backtracking /
-           ReDoS risk) are rejected before execution.
+        1. Patterns that can backtrack exponentially — a quantifier nested in
+           another quantifier, or an unbounded repetition of a group whose
+           alternatives overlap — are rejected before execution. This check is
+           the real protection: it runs before any input is touched.
         2. Files are streamed line-by-line rather than loaded in whole.
         3. Lines are capped at :data:`MAX_GREP_LINE_CHARS` characters.
         4. Wall-clock budget is strictly checked before processing every line.
@@ -374,11 +330,9 @@ class SpillStore:
         if len(pattern) > MAX_PATTERN_CHARS:
             raise SpillError(f"regular expression is longer than {MAX_PATTERN_CHARS} characters")
         flags = re.IGNORECASE if ignore_case else 0
-        if _check_nested_quantifiers(pattern, flags):
-            raise SpillError(
-                "regular expression contains nested repetitions that risk catastrophic backtracking; "
-                "rewrite pattern without nested repetitions"
-            )
+        risk = pattern_risk(pattern, flags)
+        if risk is not None:
+            raise SpillError(risk)
         try:
             regex = re.compile(pattern, flags)
         except re.error as exc:
