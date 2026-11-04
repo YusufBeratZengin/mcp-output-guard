@@ -8,12 +8,17 @@ predictable, so a few rules carry more weight than usual.
 ```bash
 git clone https://github.com/YusufBeratZengin/mcp-output-guard
 cd mcp-output-guard
-python -m pip install -e ".[dev]"  # or: python -m pip install -r requirements-dev.lock -e .
+# CI's toolchain, pinned: same versions, same failures
+python -m pip install -r requirements-dev.lock
+python -m pip install -e . --no-deps
 bash scripts/check.sh
 ```
 
 `scripts/check.sh` is the same gate CI runs: ruff, mypy and pytest with a hard 85% coverage
-floor. A pull request that does not make it pass locally will not pass in CI either.
+floor. A pull request that does not make it pass locally will not pass in CI either. CI installs
+`requirements-dev.lock` (not the floating `.[dev]` range), so pinning locally is what makes a
+green run here mean a green run there; `requirements-dev.lock` only contains versions that still
+support Python 3.10, which is why `coverage` sits at 7.16.2 rather than the newest release.
 
 The gate picks its own interpreter: an explicit `PYTHON=/path/to/python` wins, otherwise it
 scans `PATH`, project virtualenvs (`.venv` or `venv` across POSIX `bin/` and Windows `Scripts/` layouts)

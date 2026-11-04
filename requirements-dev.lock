@@ -1,6 +1,12 @@
 # Pinned development dependencies for reproducible test, lint, and type checking.
-# Generated for mcp-output-guard 0.1.0 development environment.
-coverage==7.17.0
+# CI installs exactly these versions (`pip install -r requirements-dev.lock`)
+# and then the project itself with --no-deps, so a green run cannot be explained
+# by a newer pytest, ruff or mypy.
+#
+# Every pin still supports Python 3.10, the floor declared in pyproject.toml,
+# because the test matrix runs 3.10 through 3.13. coverage 7.17 requires 3.11+,
+# hence 7.16.2.
+coverage==7.16.2
 iniconfig==2.3.1
 mypy==1.20.2
 mypy_extensions==1.1.0
