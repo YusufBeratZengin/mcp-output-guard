@@ -179,14 +179,41 @@ def test_structured_content_status_absent(store: SpillStore) -> None:
     assert out["_meta"]["output_guard"]["structured_content"] == "absent"
 
 
-def test_structured_content_status_when_it_cannot_be_pruned(store: SpillStore) -> None:
+def test_structured_content_that_cannot_be_pruned_is_spilled_whole(store: SpillStore) -> None:
+    # No list to trim (or a length-pinned one): the payload cannot be made to fit
+    # without breaking the schema, so it must leave the reply entirely instead of
+    # riding along over the limit, and the note must point at the lossless JSON.
     result = {
         "content": [{"type": "text", "text": "w" * 400}],
         "structuredContent": {"blob": "x" * 500},
     }
-    out, _ = limit_result(result, 100, spill=store)
-    assert out["_meta"]["output_guard"]["structured_content"] == "oversized_but_unchanged"
-    assert out["structuredContent"] == {"blob": "x" * 500}
+    out, info = limit_result(result, 100, spill=store)
+    assert info is not None
+    assert "structuredContent" not in out
+    guard = out["_meta"]["output_guard"]
+    assert guard["structured_content"] == "spilled"
+    assert guard["structured"]["dropped"] is True
+    json_path = Path(info["json_path"])
+    frozen = json.loads(json_path.read_text(encoding="utf-8"))
+    assert frozen["structuredContent"] == {"blob": "x" * 500}
+    assert str(json_path) in tool_text(out)
+    assert info["path"] == str(json_path)
+
+
+def test_structured_only_oversized_payload_does_not_reach_the_model(store: SpillStore) -> None:
+    # The case with no text at all: previously the huge structuredContent was
+    # forwarded untouched next to a note that named no file.
+    result = {"content": [], "structuredContent": {"blob": "x" * 5000}}
+    out, info = limit_result(result, 200, spill=store)
+    assert info is not None
+    assert "structuredContent" not in out
+    text = tool_text(out)
+    total = len(json.dumps({"blob": "x" * 5000}, separators=(",", ":")))
+    assert "[TRUNCATED:" in text
+    assert f"{total} chars total" in text
+    assert "<not persisted>" not in text
+    assert Path(info["json_path"]).is_file()
+    assert str(Path(info["json_path"])) in text
 
 
 def test_text_under_limit_but_structured_over(store: SpillStore) -> None:

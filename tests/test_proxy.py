@@ -216,12 +216,17 @@ def test_output_schema_from_tools_list_protects_structured_lists(tmp_path: Path)
         },
     )
     message = json.loads(proxy.handle_server_message(raw))
-    guard = message["result"]["_meta"]["output_guard"]
-    # The schema pins the tuple's length, so the list is left untouched and the
-    # model is told the structured part is complete-but-oversized.
-    assert message["result"]["structuredContent"]["pair"][2]["x"] == "c" * 100
-    assert guard["structured_content"] == "oversized_but_unchanged"
-    assert "structured" not in guard
+    result = message["result"]
+    guard = result["_meta"]["output_guard"]
+    # The schema pins the tuple's length, so nothing can be trimmed without
+    # breaking it: the structured field leaves the reply and the whole result is
+    # spilled losslessly as JSON, named by the note the model sees.
+    assert "structuredContent" not in result
+    assert guard["structured_content"] == "spilled"
+    assert guard["structured"]["dropped"] is True
+    frozen = json.loads(Path(guard["spill_json"]).read_text(encoding="utf-8"))
+    assert frozen["structuredContent"]["pair"][2]["x"] == "c" * 100
+    assert guard["spill_json"] in result["content"][-1]["text"]
 
 
 def test_output_schema_min_items_is_enforced_end_to_end(tmp_path: Path) -> None:

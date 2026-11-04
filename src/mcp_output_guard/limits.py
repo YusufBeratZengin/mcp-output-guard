@@ -48,6 +48,8 @@ _SHORT_NOTE_TEMPLATES: dict[str, str] = {
     "tr": "[KESILDI: toplam {total} karakter, tam çıktı: {path}]",
 }
 
+_STRUCTURED_DROPPED_SUFFIX = " [structuredContent spilled whole; not inlined]"
+
 
 def is_text_block(block: Any) -> bool:
     return (
@@ -292,15 +294,14 @@ def prune_structured(
     return out, {"fields": reports}
 
 
-def _structured_status(
-    structured: Any, pruned_info: dict[str, Any] | None, oversized: bool
-) -> str:
+def _structured_status(structured: Any, *, pruned: bool, spilled: bool) -> str:
     if structured is None:
         return "absent"
-    if pruned_info is not None:
+    if pruned:
         return "pruned"
-    # Oversized but shaped in a way the pruner cannot trim without inventing keys.
-    return "oversized_but_unchanged" if oversized else "intact"
+    if spilled:
+        return "spilled"
+    return "intact"
 
 
 def limit_result(
@@ -321,7 +322,10 @@ def limit_result(
     the untouched response byte-identical.
 
     ``output_schema`` is the tool's advertised schema, when the proxy has seen
-    it in ``tools/list``; it only affects how ``structuredContent`` is pruned.
+    it in ``tools/list``. It decides how far ``structuredContent`` can be
+    pruned; a payload whose schema pins the list length (``prefixItems``,
+    ``contains``) cannot be trimmed and is dropped from the reply instead,
+    with the full result in the JSON spill named by the note.
     """
     if max_chars <= 0:
         raise ValueError("max_chars must be positive")
@@ -393,31 +397,55 @@ def limit_result(
 
     # Structured payload: keep the schema, drop the tail.
     structured_info: dict[str, Any] | None = None
+    structured_dropped = False
     if structured_oversized:
         pruned, structured_info = prune_structured(structured, max_chars, schema=output_schema)
+        result = dict(result)
         if structured_info is not None:
-            result = dict(result)
             result["structuredContent"] = pruned
             info["structured"] = structured_info
+        else:
+            # The list length is pinned by the schema (prefixItems/contains) or
+            # there is no list at all: inlining this field would hand the model a
+            # reply over the limit. Leave it out and let the lossless JSON spill
+            # below carry the complete payload; the note names that file.
+            result.pop("structuredContent", None)
+            structured_dropped = True
+            info["structured"] = {
+                "dropped": True,
+                "total_chars": _json_size(structured),
+                "reason": "oversized and not prunable without breaking the output schema",
+            }
 
     # A lossless copy of the whole result, so nothing at all is lost - text,
     # binary meta or structured tail.
     json_path: str | None = None
-    if structured_info is not None or binary_reports:
+    if structured_oversized or binary_reports:
         json_record = store.put_json(source_result, tool=tool)
         json_path = str(json_record.path)
         info["json_path"] = json_path
         info["json_spill_id"] = json_record.spill_id
+        if structured_oversized:
+            structured_report = info.get("structured")
+            if isinstance(structured_report, dict):
+                structured_report["path"] = json_path
+                structured_report["spill_id"] = json_record.spill_id
 
     if primary_path is None:
         primary_path = json_path or "<not persisted>"
+    elif json_path is not None and structured_oversized:
+        # "full output" must mean the whole result, not just its text half: the
+        # JSON spill is the only copy that still has the structured payload.
+        primary_path = json_path
+        info["path"] = json_path
+        info["spill_id"] = info["json_spill_id"]
 
     # Decide how much head text is shown.
     note_short = reserve_note or text_total == 0
     if reserve_note and text_total:
         note_len = len(
             format_note(note_lang, total=text_total, shown=0, path=primary_path, short=True)
-        )
+        ) + (len(_STRUCTURED_DROPPED_SUFFIX) if structured_dropped else 0)
         head_budget = max(0, max_chars - note_len - 2)
     else:
         head_budget = max_chars
@@ -454,6 +482,8 @@ def limit_result(
         path=primary_path,
         short=note_short,
     )
+    if structured_dropped:
+        note += _STRUCTURED_DROPPED_SUFFIX
     if dropped_blocks:
         note += f" [+{dropped_blocks} text block(s) omitted]"
 
@@ -479,10 +509,12 @@ def limit_result(
         "truncated": True,
         "tool": tool,
         "max_chars": max_chars,
-        "total_chars": text_total,
+        "total_chars": total_for_note,
         "shown_chars": shown,
         "spill": primary_path,
-        "structured_content": _structured_status(structured, structured_info, structured_oversized),
+        "structured_content": _structured_status(
+            structured, pruned=structured_info is not None, spilled=structured_dropped
+        ),
         "hint": (
             "The full output is on disk. Use output_guard_read(spill, offset, limit) "
             "to page through it, output_guard_grep(spill, pattern) to search it, or "
@@ -493,8 +525,8 @@ def limit_result(
         guard_meta["spill"] = info["path"]
     if "json_path" in info:
         guard_meta["spill_json"] = info["json_path"]
-    if structured_info is not None:
-        guard_meta["structured"] = structured_info
+    if "structured" in info:
+        guard_meta["structured"] = info["structured"]
     if binary_reports:
         guard_meta["binary"] = [
             {k: v for k, v in item.items() if k in {"path", "bytes", "mime_type", "error"}}
@@ -504,6 +536,7 @@ def limit_result(
     meta_dict["output_guard"] = guard_meta
     new_result["_meta"] = meta_dict
 
+    info["total_chars"] = total_for_note
     info["shown_chars"] = shown
     info["path"] = primary_path
     return new_result, info
