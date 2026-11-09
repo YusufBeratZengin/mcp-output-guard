@@ -54,12 +54,10 @@ def test_mixed_batch_has_one_complete_response(tmp_path: Path, error: bool) -> N
 
 
 
-@pytest.mark.parametrize("failure", ["eof", "read_error", "write_error", "timeout"])
+@pytest.mark.parametrize("failure", ["eof", "read_error", "write_error"])
 def test_mixed_batch_remains_complete_on_server_failure(
     tmp_path: Path, failure: str, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    if failure == "timeout":
-        monkeypatch.setattr(proxy_module, "_BATCH_RESPONSE_TIMEOUT_SECONDS", 0.05)
     proxy, output = mixed_proxy(tmp_path)
     assert output.getvalue() == b""
     # A partial response must also stay buffered until completion or failure.
@@ -80,26 +78,49 @@ def test_mixed_batch_remains_complete_on_server_failure(
             raise BrokenPipeError("synthetic")
         monkeypatch.setattr(proxy, "_write_server", refuse)
         proxy._client_loop()
-    else:
-        done = threading.Event()
-        original_write = proxy._write_client
-        def write(raw: bytes) -> None:
-            original_write(raw)
-            done.set()
-        monkeypatch.setattr(proxy, "_write_client", write)
-        assert done.wait(1), "missing server response must have a bounded wait"
     lines = output.getvalue().splitlines()
     assert len(lines) == 1
     answers = json.loads(lines[0])
     assert [item["id"] for item in answers] == [1, 2, 3]
     assert answers[1]["error"]["code"] == -32603
     assert answers[2]["result"] == {"ok": True}
-    # Late replies to a timed out request must not split/duplicate the batch.
+    # Late replies to a failed request must not split/duplicate the batch.
     assert proxy.handle_server_message(framing.encode_message(
         {"jsonrpc": "2.0", "id": 2, "result": {}}
     )) == b""
 
 
+
+
+def test_slow_batch_reply_is_not_cut_off(tmp_path: Path) -> None:
+    # A slow server call is legitimate: the batch must wait for the real reply
+    # and never be closed with an error by a fixed deadline.
+    proxy, output = mixed_proxy(tmp_path)
+    assert not hasattr(proxy_module, "_BATCH_RESPONSE_TIMEOUT_SECONDS")
+    threading.Event().wait(0.2)
+    assert output.getvalue() == b""
+    response = [{"jsonrpc": "2.0", "id": i, "result": {"late": True}} for i in (2, 3)]
+    proxy._write_client(proxy.handle_server_message(framing.encode_message(response)))
+    answers = json.loads(output.getvalue().splitlines()[0])
+    assert [item["id"] for item in answers] == [1, 2, 3]
+    assert all("error" not in item for item in answers)
+
+
+def test_grep_worker_ignores_working_directory_modules(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A json.py in the working directory must not be imported by the worker.
+    marker = tmp_path / "planted.txt"
+    (tmp_path / "json.py").write_text(
+        f"open({str(marker)!r}, 'w').write('ran')\n", encoding="utf-8"
+    )
+    store = spill.SpillStore(tmp_path / "spills")
+    record = store.put_text("alpha\nbeta\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path))
+    answer = store.grep(record.spill_id, "beta")
+    assert answer["total_matches"] == 1
+    assert not marker.exists()
 
 
 def test_expired_batch_id_can_be_reused(tmp_path: Path) -> None:

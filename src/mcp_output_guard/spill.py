@@ -412,7 +412,7 @@ class SpillStore:
             raise SpillError(budget_message)
         try:
             process = subprocess.Popen(
-                [sys.executable, "-c", _GREP_WORKER],
+                [sys.executable, "-I", "-c", _GREP_WORKER],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,

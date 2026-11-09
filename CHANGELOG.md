@@ -8,10 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Enforce the grep budget in a killable worker; refuse searches if worker startup fails.
+- Enforce the grep budget in a killable worker started in isolated mode (`-I`, so a `json.py` in the working directory or `PYTHONPATH` is never imported); refuse searches if worker startup fails.
 - Read long grep lines in bounded chunks while keeping the existing file and scan caps.
 - Preserve the next frame after a limit-plus-one line and reject oversized unterminated CR tails.
-- Return mixed virtual/server batches as one complete array, including upstream failure or timeout.
+- Return mixed virtual/server batches as one complete array, closed with errors only when the server reaches EOF or fails, never by a fixed deadline.
 - Oversized `structuredContent` that could not be pruned (a length-pinned list such as
   `prefixItems`/`contains`, or no list at all) was forwarded untouched, over `--max-chars`, next
   to a note that named no file. Such a payload is now dropped from the reply, the complete

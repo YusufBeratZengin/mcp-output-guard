@@ -29,15 +29,12 @@ from .spill import SpillError, SpillStore
 __all__ = ["GuardStats", "PendingCall", "Proxy", "resolve_command"]
 
 _JSONRPC_VERSION = "2.0"
-# Keep a missing upstream reply from retaining the local half indefinitely.
-_BATCH_RESPONSE_TIMEOUT_SECONDS = 60.0
 
 
 @dataclass
 class _PendingBatch:
     ids: list[Any]
     answers: dict[str, dict[str, Any]]
-    timer: threading.Timer | None = None
 
 
 @dataclass
@@ -213,7 +210,9 @@ class Proxy:
         promised tool: an agent that batches ``output_guard_read`` with a server
         call must still get an answer, and the server must never see a tool it
         does not implement. Local answers wait for the remote answers so the
-        client receives one complete array. The remaining items are forwarded
+        client receives one complete array. There is no fixed deadline, because
+        a slow server call is legitimate; the batch is closed with errors only
+        when the server stops answering (EOF or an I/O failure). The remaining items are forwarded
         as a batch, byte for byte when nothing was answered here.
         """
         forwarded: list[Any] = []
@@ -258,24 +257,19 @@ class Proxy:
              if isinstance(item, dict) and "id" in item and "method" in item],
             {_id_key(item["id"]): item for item in answers},
         )
-        batch.timer = threading.Timer(_BATCH_RESPONSE_TIMEOUT_SECONDS, self._expire_batch, (batch,))
-        batch.timer.daemon = True
         with self._batch_lock:
             for request_id in remote_ids:
                 key = _id_key(request_id)
                 self._expired_batch_ids.discard(key)
                 self._batch_by_id[key] = batch
-        batch.timer.start()
         return framing.encode_message(forwarded)
 
     def _finish_batch_locked(self, batch: _PendingBatch) -> bytes:
-        if batch.timer is not None:
-            batch.timer.cancel()
         for request_id in batch.ids:
             self._batch_by_id.pop(_id_key(request_id), None)
         return framing.encode_message([batch.answers[_id_key(i)] for i in batch.ids])
 
-    def _expire_batch(self, batch: _PendingBatch) -> None:
+    def _fail_batch(self, batch: _PendingBatch) -> None:
         with self._batch_lock:
             if not any(value is batch for value in self._batch_by_id.values()):
                 return
@@ -296,7 +290,7 @@ class Proxy:
         with self._batch_lock:
             batches = list({id(batch): batch for batch in self._batch_by_id.values()}.values())
         for batch in batches:
-            self._expire_batch(batch)
+            self._fail_batch(batch)
 
     def _route_batch_answers(self, message: Any, raw: bytes) -> bytes:
         items = message if isinstance(message, list) else [message]
