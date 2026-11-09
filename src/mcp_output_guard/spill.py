@@ -26,6 +26,8 @@ import json
 import os
 import re
 import shutil
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -74,6 +76,73 @@ _KIND_SUFFIX = {"text": ".txt", "json": ".json", "csv": ".csv", "binary": ".bin"
 
 class SpillError(Exception):
     """Raised for unreadable, unknown or out-of-bounds spill references."""
+
+
+# A killable subprocess enforces the budget even during a single regex match.
+_GREP_WORKER = r"""
+import json
+import re
+import sys
+
+
+def main():
+    request = json.load(sys.stdin)
+    try:
+        regex = re.compile(request["pattern"], request["flags"])
+    except re.error as exc:
+        json.dump({"ok": False, "kind": "regex", "message": str(exc)}, sys.stdout)
+        return 0
+    matches = []
+    total = 0
+    skipped = 0
+    scanned = 0
+    cut = False
+    with open(request["path"], "r", encoding="utf-8", errors="replace") as handle:
+        number = 0
+        while True:
+            raw_line = handle.readline(min(request["max_line_chars"] + 2,
+                                           max(1, request["max_scan_chars"] - scanned + 1)))
+            if not raw_line:
+                break
+            number += 1
+            scanned += len(raw_line)
+            if scanned > request["max_scan_chars"]:
+                cut = True
+                break
+            line = raw_line.rstrip("\r\n")
+            if len(line) > request["max_line_chars"]:
+                line = line[:request["max_line_chars"]]
+                skipped += 1
+            # Drain the rest of a long physical line in bounded chunks.
+            while not raw_line.endswith("\n"):
+                raw_line = handle.readline(min(65536, max(1, request["max_scan_chars"] - scanned + 1)))
+                if not raw_line:
+                    break
+                scanned += len(raw_line)
+                if scanned > request["max_scan_chars"]:
+                    cut = True
+                    break
+            if cut:
+                break
+            if regex.search(line):
+                total += 1
+                if len(matches) < request["max_matches"]:
+                    matches.append({"line": number, "text": line[:400]})
+    json.dump(
+        {
+            "ok": True,
+            "total": total,
+            "matches": matches,
+            "skipped": skipped,
+            "scan_truncated": cut,
+        },
+        sys.stdout,
+    )
+    return 0
+
+
+sys.exit(main())
+"""
 
 
 @dataclass(frozen=True)
@@ -311,6 +380,67 @@ class SpillStore:
                 "text": window,
             }
 
+    def _scan_in_worker(
+        self,
+        path: Path,
+        pattern: str,
+        flags: int,
+        *,
+        max_matches: int,
+        max_scan_chars: int,
+        budget_seconds: float,
+        budget_message: str,
+    ) -> dict[str, Any]:
+        """Run the scan in a child interpreter, killing it at the deadline.
+
+        Failure to start the worker refuses the scan; regex matching must
+        never fall back to the proxy process. A worker that exceeds the
+        budget is killed and reported as a budget failure.
+        """
+        deadline = time.monotonic() + budget_seconds
+        request = json.dumps(
+            {
+                "path": str(path),
+                "pattern": pattern,
+                "flags": flags,
+                "max_matches": max_matches,
+                "max_line_chars": MAX_GREP_LINE_CHARS,
+                "max_scan_chars": max_scan_chars,
+            }
+        ).encode("utf-8")
+        if time.monotonic() >= deadline:
+            raise SpillError(budget_message)
+        try:
+            process = subprocess.Popen(
+                [sys.executable, "-c", _GREP_WORKER],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError:
+            raise SpillError("cannot start grep worker; search refused") from None
+        try:
+            stdout, _stderr = process.communicate(request, timeout=max(0.0, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.communicate()
+            raise SpillError(budget_message) from None
+        except BaseException:
+            process.kill()
+            process.communicate()
+            raise
+        try:
+            answer = json.loads(stdout.decode("utf-8"))
+        except ValueError:  # pragma: no cover - worker crashed before answering
+            raise SpillError("grep worker returned no result") from None
+        if not isinstance(answer, dict) or "ok" not in answer:  # pragma: no cover - defensive
+            raise SpillError("grep worker returned no result")
+        if not answer["ok"]:
+            if answer.get("kind") == "regex":
+                raise SpillError(f"invalid regular expression: {answer.get('message')}")
+            raise SpillError(f"grep worker failed: {answer.get('message')}")  # pragma: no cover
+        return answer
+
     def grep(
         self,
         ref: str,
@@ -329,9 +459,9 @@ class SpillStore:
            another quantifier, or an unbounded repetition of a group whose
            alternatives overlap — are rejected before execution. This check is
            the real protection: it runs before any input is touched.
-        2. Files are streamed line-by-line rather than loaded in whole.
+        2. Files are streamed in bounded line chunks rather than loaded in whole.
         3. Lines are capped at :data:`MAX_GREP_LINE_CHARS` characters.
-        4. Wall-clock budget is strictly checked before processing every line.
+        4. A child process is killed if any match or the scan exceeds the budget.
         5. Total scanned characters are capped at ``max_scan_chars``.
         """
         if max_matches <= 0:
@@ -343,7 +473,7 @@ class SpillStore:
         if risk is not None:
             raise SpillError(risk)
         try:
-            regex = re.compile(pattern, flags)
+            re.compile(pattern, flags)
         except re.error as exc:
             raise SpillError(f"invalid regular expression: {exc}") from exc
         path = self.resolve(ref)
@@ -353,32 +483,20 @@ class SpillStore:
                 f"spill file is too large to grep ({size / (1024 * 1024):.1f} MB "
                 f"exceeds {MAX_GREP_FILE_BYTES // (1024 * 1024)} MB limit)"
             )
-        deadline = time.monotonic() + max(0.0, float(budget_seconds))
-        matches: list[dict[str, Any]] = []
-        total = 0
-        skipped_long_lines = 0
-        scanned_chars = 0
-        scan_truncated = False
-
-        with path.open("r", encoding="utf-8", errors="replace") as handle:
-            for number, raw_line in enumerate(handle, start=1):
-                if time.monotonic() > deadline:
-                    raise SpillError(
-                        f"search exceeded its {budget_seconds:g}s budget after {number} lines; "
-                        "narrow the pattern or read a smaller window"
-                    )
-                line = raw_line.rstrip("\r\n")
-                scanned_chars += len(raw_line)
-                if scanned_chars > max_scan_chars:
-                    scan_truncated = True
-                    break
-                if len(line) > MAX_GREP_LINE_CHARS:
-                    line = line[:MAX_GREP_LINE_CHARS]
-                    skipped_long_lines += 1
-                if regex.search(line):
-                    total += 1
-                    if len(matches) < max_matches:
-                        matches.append({"line": number, "text": line[:400]})
+        budget_message = (
+            f"search exceeded its {budget_seconds:g}s budget; "
+            "narrow the pattern or read a smaller window"
+        )
+        if budget_seconds <= 0:
+            raise SpillError(budget_message)
+        scanned = self._scan_in_worker(
+            path, pattern, flags, max_matches=max_matches, max_scan_chars=max_scan_chars,
+            budget_seconds=budget_seconds, budget_message=budget_message,
+        )
+        matches = scanned["matches"]
+        total = scanned["total"]
+        skipped_long_lines = scanned["skipped"]
+        scan_truncated = scanned["scan_truncated"]
         payload: dict[str, Any] = {
             "spill_id": path.stem,
             "path": str(path),

@@ -89,10 +89,11 @@ def read_line(stream: IO[bytes]) -> bytes | None:
         # MAX bytes of content plus an LF (and optionally a CR) is still a
         # valid line; anything else is over budget and must not be parsed.
         content = raw[:-1] if raw.endswith(b"\n") else raw
-        if content.endswith(b"\r"):
+        if raw.endswith(b"\r\n"):
             content = content[:-1]
         if len(content) > MAX_LINE_BYTES:
-            _discard_rest_of_line(stream)
+            if not raw.endswith(b"\n"):
+                _discard_rest_of_line(stream)
             raise FramingError(f"message exceeds {MAX_LINE_BYTES} bytes; dropped")
     if raw.endswith(b"\n"):
         raw = raw[:-1]

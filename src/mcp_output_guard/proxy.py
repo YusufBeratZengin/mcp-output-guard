@@ -29,6 +29,15 @@ from .spill import SpillError, SpillStore
 __all__ = ["GuardStats", "PendingCall", "Proxy", "resolve_command"]
 
 _JSONRPC_VERSION = "2.0"
+# Keep a missing upstream reply from retaining the local half indefinitely.
+_BATCH_RESPONSE_TIMEOUT_SECONDS = 60.0
+
+
+@dataclass
+class _PendingBatch:
+    ids: list[Any]
+    answers: dict[str, dict[str, Any]]
+    timer: threading.Timer | None = None
 
 
 @dataclass
@@ -126,6 +135,9 @@ class Proxy:
 
         self._pending: dict[str, PendingCall] = {}
         self._pending_lock = threading.Lock()
+        self._batch_lock = threading.Lock()
+        self._batch_by_id: dict[str, _PendingBatch] = {}
+        self._expired_batch_ids: set[str] = set()
         # outputSchema per tool, learned from tools/list. Guard results are
         # handled on the same reader thread, so no lock is needed.
         self._tool_schemas: dict[str, dict[str, Any]] = {}
@@ -169,6 +181,9 @@ class Proxy:
         if not isinstance(message, dict):
             return raw
         method = message.get("method")
+        if method is not None and "id" in message:
+            with self._batch_lock:
+                self._expired_batch_ids.discard(_id_key(message["id"]))
         params = message.get("params")
         params_dict: dict[str, Any] = params if isinstance(params, dict) else {}
 
@@ -197,10 +212,9 @@ class Proxy:
         Batches are rare in MCP, but they are not exotic enough to break a
         promised tool: an agent that batches ``output_guard_read`` with a server
         call must still get an answer, and the server must never see a tool it
-        does not implement. The local answers are written immediately as their
-        own JSON-RPC response array (responses are matched by id, not by order);
-        the remaining items are forwarded as a batch, byte for byte when nothing
-        was answered here.
+        does not implement. Local answers wait for the remote answers so the
+        client receives one complete array. The remaining items are forwarded
+        as a batch, byte for byte when nothing was answered here.
         """
         forwarded: list[Any] = []
         answers: list[dict[str, Any]] = []
@@ -232,13 +246,86 @@ class Proxy:
                 continue
             forwarded.append(item)
 
-        if answers:
-            self._write_client(framing.encode_message(answers))
-        if len(forwarded) == len(message):
+        if not answers:
             return raw
-        if not forwarded:
-            return None
+        remote_ids = [item["id"] for item in forwarded
+                      if isinstance(item, dict) and "id" in item and "method" in item]
+        if not remote_ids:
+            self._write_client(framing.encode_message(answers))
+            return framing.encode_message(forwarded) if forwarded else None
+        batch = _PendingBatch(
+            [item["id"] for item in message
+             if isinstance(item, dict) and "id" in item and "method" in item],
+            {_id_key(item["id"]): item for item in answers},
+        )
+        batch.timer = threading.Timer(_BATCH_RESPONSE_TIMEOUT_SECONDS, self._expire_batch, (batch,))
+        batch.timer.daemon = True
+        with self._batch_lock:
+            for request_id in remote_ids:
+                key = _id_key(request_id)
+                self._expired_batch_ids.discard(key)
+                self._batch_by_id[key] = batch
+        batch.timer.start()
         return framing.encode_message(forwarded)
+
+    def _finish_batch_locked(self, batch: _PendingBatch) -> bytes:
+        if batch.timer is not None:
+            batch.timer.cancel()
+        for request_id in batch.ids:
+            self._batch_by_id.pop(_id_key(request_id), None)
+        return framing.encode_message([batch.answers[_id_key(i)] for i in batch.ids])
+
+    def _expire_batch(self, batch: _PendingBatch) -> None:
+        with self._batch_lock:
+            if not any(value is batch for value in self._batch_by_id.values()):
+                return
+            for request_id in batch.ids:
+                key = _id_key(request_id)
+                if key not in batch.answers:
+                    batch.answers[key] = {
+                        "jsonrpc": _JSONRPC_VERSION, "id": request_id,
+                        "error": {"code": -32603, "message": "server batch response unavailable"},
+                    }
+                    self._expired_batch_ids.add(key)
+                    self._pop_pending(request_id)
+            raw = self._finish_batch_locked(batch)
+        with contextlib.suppress(BrokenPipeError, OSError, ValueError):
+            self._write_client(raw)
+
+    def _fail_batches(self) -> None:
+        with self._batch_lock:
+            batches = list({id(batch): batch for batch in self._batch_by_id.values()}.values())
+        for batch in batches:
+            self._expire_batch(batch)
+
+    def _route_batch_answers(self, message: Any, raw: bytes) -> bytes:
+        items = message if isinstance(message, list) else [message]
+        remaining = []
+        completed = []
+        consumed = False
+        with self._batch_lock:
+            for item in items:
+                if not isinstance(item, dict) or "id" not in item or "method" in item:
+                    remaining.append(item)
+                    continue
+                key = _id_key(item["id"])
+                batch = self._batch_by_id.get(key)
+                if batch is None:
+                    if key in self._expired_batch_ids:
+                        self._expired_batch_ids.discard(key)
+                        consumed = True
+                    else:
+                        remaining.append(item)
+                    continue
+                consumed = True
+                batch.answers[key] = item
+                if all(_id_key(i) in batch.answers for i in batch.ids):
+                    completed.append(self._finish_batch_locked(batch))
+        if not consumed:
+            return raw
+        if remaining:
+            completed.append(framing.encode_message(remaining if isinstance(message, list) else remaining[0]))
+        return b"\n".join(completed)
 
     def _track(self, request_id: Any, pending: PendingCall) -> None:
         if request_id is None:
@@ -260,17 +347,16 @@ class Proxy:
 
         if isinstance(message, list):
             handled = [self._handle_server_object(item) for item in message]
-            if all(item is None for item in handled):
-                return raw
             merged = [item if item is not None else message[i] for i, item in enumerate(handled)]
-            return framing.encode_message(merged)
+            out = raw if all(item is None for item in handled) else framing.encode_message(merged)
+            return self._route_batch_answers(merged, out)
 
         if not isinstance(message, dict):
             return raw
         updated = self._handle_server_object(message)
         if updated is None:
-            return raw
-        return framing.encode_message(updated)
+            return self._route_batch_answers(message, raw)
+        return self._route_batch_answers(updated, framing.encode_message(updated))
 
     def _handle_server_object(self, message: Any) -> dict[str, Any] | None:
         if not isinstance(message, dict) or "id" not in message:
@@ -412,6 +498,7 @@ class Proxy:
                 try:
                     self._write_server(out)
                 except (BrokenPipeError, OSError):
+                    self._fail_batches()
                     break
 
     def _server_loop(self) -> None:
@@ -426,7 +513,9 @@ class Proxy:
             if not raw.strip():
                 continue
             try:
-                self._write_client(self.handle_server_message(raw))
+                outgoing = self.handle_server_message(raw)
+                if outgoing:
+                    self._write_client(outgoing)
             except (BrokenPipeError, OSError):
                 break
             except Exception as exc:  # pragma: no cover - last-resort liveness guard
@@ -434,6 +523,7 @@ class Proxy:
                 self._log_line(f"mcp-output-guard: dropped guard for one message ({exc})")
                 with contextlib.suppress(BrokenPipeError, OSError):
                     self._write_client(raw)
+        self._fail_batches()
         with self._client_lock, contextlib.suppress(OSError, ValueError):  # pragma: no cover
             self._client_out.flush()
 

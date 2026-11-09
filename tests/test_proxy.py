@@ -354,8 +354,11 @@ def test_virtual_tool_inside_a_batch_is_answered_locally(tmp_path: Path) -> None
     # The server only ever sees the call it actually implements.
     assert [item["id"] for item in json.loads(forwarded)] == [41]
 
-    answered = json.loads(out.getvalue().decode("utf-8").strip())
-    assert isinstance(answered, list)
+    assert out.getvalue() == b""
+    response = response_message(41, {"content": [{"type": "text", "text": "x" * 500}]})
+    answered = json.loads(proxy.handle_server_message(response))
+    assert [item["id"] for item in answered] == [40, 41]
+    assert answered[1]["result"]["_meta"]["truncated"] is True
     assert answered[0]["id"] == 40
     assert answered[0]["result"]["structuredContent"]["spills"] == []
     assert proxy.stats.calls_seen == 2
