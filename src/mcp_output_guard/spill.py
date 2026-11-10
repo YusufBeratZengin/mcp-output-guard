@@ -419,16 +419,20 @@ class SpillStore:
             )
         except OSError:
             raise SpillError("cannot start grep worker; search refused") from None
-        try:
-            stdout, _stderr = process.communicate(request, timeout=max(0.0, deadline - time.monotonic()))
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.communicate()
-            raise SpillError(budget_message) from None
-        except BaseException:
-            process.kill()
-            process.communicate()
-            raise
+        # The context manager closes every pipe and reaps the child on all paths.
+        # After a timed-out communicate() a second communicate() on POSIX never
+        # closes stdin, which leaked an open pipe (a ResourceWarning).
+        with process:
+            try:
+                stdout, _stderr = process.communicate(
+                    request, timeout=max(0.0, deadline - time.monotonic())
+                )
+            except subprocess.TimeoutExpired:
+                process.kill()
+                raise SpillError(budget_message) from None
+            except BaseException:
+                process.kill()
+                raise
         try:
             answer = json.loads(stdout.decode("utf-8"))
         except ValueError:  # pragma: no cover - worker crashed before answering
