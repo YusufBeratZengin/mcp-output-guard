@@ -178,6 +178,11 @@ class Proxy:
         if not isinstance(message, dict):
             return raw
         method = message.get("method")
+        if method == "notifications/cancelled" and "id" not in message:
+            params = message.get("params")
+            if isinstance(params, dict) and "requestId" in params:
+                self._cancel_batch_request(params["requestId"])
+            return raw
         if method is not None and "id" in message:
             with self._batch_lock:
                 self._expired_batch_ids.discard(_id_key(message["id"]))
@@ -285,6 +290,32 @@ class Proxy:
             raw = self._finish_batch_locked(batch)
         with contextlib.suppress(BrokenPipeError, OSError, ValueError):
             self._write_client(raw)
+
+    def _cancel_batch_request(self, request_id: Any) -> None:
+        """Fill a cancelled batch member with an error so the batch can complete.
+
+        A server must not answer a request the client cancelled, so without this
+        the whole batch (including answers that are already available) would
+        stay buffered for the rest of the session.
+        """
+        key = _id_key(request_id)
+        raw: bytes | None = None
+        with self._batch_lock:
+            batch = self._batch_by_id.get(key)
+            if batch is None or key in batch.answers:
+                return
+            batch.answers[key] = {
+                "jsonrpc": _JSONRPC_VERSION, "id": request_id,
+                "error": {"code": -32800, "message": "request cancelled"},
+            }
+            del self._batch_by_id[key]
+            self._expired_batch_ids.add(key)
+            self._pop_pending(request_id)
+            if all(_id_key(i) in batch.answers for i in batch.ids):
+                raw = self._finish_batch_locked(batch)
+        if raw is not None:
+            with contextlib.suppress(BrokenPipeError, OSError, ValueError):
+                self._write_client(raw)
 
     def _fail_batches(self) -> None:
         with self._batch_lock:

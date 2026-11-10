@@ -13,7 +13,6 @@ from pathlib import Path
 import pytest
 
 from mcp_output_guard import framing, spill
-from mcp_output_guard import proxy as proxy_module
 from mcp_output_guard.proxy import Proxy
 
 
@@ -92,18 +91,69 @@ def test_mixed_batch_remains_complete_on_server_failure(
 
 
 
-def test_slow_batch_reply_is_not_cut_off(tmp_path: Path) -> None:
-    # A slow server call is legitimate: the batch must wait for the real reply
-    # and never be closed with an error by a fixed deadline.
+def test_slow_batch_reply_is_not_cut_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A slow server call is legitimate: no deadline timer may be armed for the
+    # batch, however long the real reply takes (simulated by never firing one).
+    armed: list[float] = []
+
+    class RecordingTimer:
+        def __init__(self, interval: float, *_args: object, **_kwargs: object) -> None:
+            armed.append(interval)
+            self.daemon = True
+
+        def start(self) -> None:
+            pass
+
+        def cancel(self) -> None:
+            pass
+
+    monkeypatch.setattr(threading, "Timer", RecordingTimer)
     proxy, output = mixed_proxy(tmp_path)
-    assert not hasattr(proxy_module, "_BATCH_RESPONSE_TIMEOUT_SECONDS")
-    threading.Event().wait(0.2)
+    assert armed == []
     assert output.getvalue() == b""
     response = [{"jsonrpc": "2.0", "id": i, "result": {"late": True}} for i in (2, 3)]
     proxy._write_client(proxy.handle_server_message(framing.encode_message(response)))
     answers = json.loads(output.getvalue().splitlines()[0])
     assert [item["id"] for item in answers] == [1, 2, 3]
     assert all("error" not in item for item in answers)
+
+
+def test_cancelled_batch_member_completes_the_batch(tmp_path: Path) -> None:
+    # The server must not answer a cancelled request, so the proxy has to fill
+    # that slot itself or the ready answers would be held for the whole session.
+    proxy, output = mixed_proxy(tmp_path)
+    cancel = framing.encode_message({
+        "jsonrpc": "2.0", "method": "notifications/cancelled",
+        "params": {"requestId": 2},
+    })
+    assert proxy.handle_client_message(cancel) == cancel  # still forwarded upstream
+    assert output.getvalue() == b""
+    reply = framing.encode_message({"jsonrpc": "2.0", "id": 3, "result": {"ok": True}})
+    proxy._write_client(proxy.handle_server_message(reply))
+    lines = output.getvalue().splitlines()
+    assert len(lines) == 1
+    answers = json.loads(lines[0])
+    assert [item["id"] for item in answers] == [1, 2, 3]
+    assert answers[1]["error"]["code"] == -32800
+    assert answers[2]["result"] == {"ok": True}
+    assert proxy._batch_by_id == {}
+
+
+def test_cancelling_the_last_open_member_flushes_the_batch(tmp_path: Path) -> None:
+    proxy, output = mixed_proxy(tmp_path)
+    reply = framing.encode_message({"jsonrpc": "2.0", "id": 3, "result": {}})
+    assert proxy.handle_server_message(reply) == b""
+    proxy.handle_client_message(framing.encode_message({
+        "jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 2},
+    }))
+    answers = json.loads(output.getvalue().splitlines()[0])
+    assert [item["id"] for item in answers] == [1, 2, 3]
+    assert answers[1]["error"]["code"] == -32800
+    # A late reply to the cancelled id is dropped, not duplicated.
+    late = framing.encode_message({"jsonrpc": "2.0", "id": 2, "result": {}})
+    assert proxy.handle_server_message(late) == b""
 
 
 def test_grep_worker_ignores_working_directory_modules(
