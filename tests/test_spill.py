@@ -6,6 +6,7 @@ import os
 import stat
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -175,8 +176,8 @@ def test_read_and_grep_file_size_limits(store: SpillStore, monkeypatch: pytest.M
 
     real_stat = Path.stat
 
-    def fake_stat(self: Path) -> os.stat_result:
-        res = real_stat(self)
+    def fake_stat(self: Path, **kwargs: Any) -> os.stat_result:
+        res = real_stat(self, **kwargs)
         if self == record.path:
             return os.stat_result((
                 res.st_mode,

@@ -215,9 +215,10 @@ def _has_branch_conflict(node: Any, parser: Any, fold: bool) -> bool:
         elif op == getattr(parser, "SUBPATTERN", None):
             if _has_branch_conflict(_subpattern_body(value), parser, fold):
                 return True
-        elif op in (getattr(parser, "MAX_REPEAT", None), getattr(parser, "MIN_REPEAT", None)):
-            if _has_branch_conflict(value[2], parser, fold):
-                return True
+        elif op in (getattr(parser, "MAX_REPEAT", None), getattr(parser, "MIN_REPEAT", None)) and (
+            _has_branch_conflict(value[2], parser, fold)
+        ):
+            return True
     return False
 
 
@@ -236,9 +237,10 @@ def _has_ambiguous_repeat(node: Any, parser: Any, fold: bool) -> bool:
         elif op == getattr(parser, "SUBPATTERN", None):
             if _has_ambiguous_repeat(_subpattern_body(value), parser, fold):
                 return True
-        elif op == getattr(parser, "BRANCH", None):
-            if any(_has_ambiguous_repeat(branch, parser, fold) for branch in value[1]):
-                return True
+        elif op == getattr(parser, "BRANCH", None) and any(
+            _has_ambiguous_repeat(branch, parser, fold) for branch in value[1]
+        ):
+            return True
     return False
 
 
